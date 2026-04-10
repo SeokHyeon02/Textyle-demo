@@ -1,0 +1,13 @@
+# 가상환경 폴더 제외
+venv/
+env/
+
+# 파이썬 캐시 파일 제외
+__pycache__/
+*.pyc
+
+# 맥 OS 시스템 파일 제외 (혹시 모를 충돌 방지)
+.DS_Store
+# 🚨 Node.js 라이브러리 폴더 제외 (추가된 부분)
+node_modules/
+.env
