@@ -4,8 +4,8 @@ from supabase import create_client, Client
 import os
 
 # 환경 변수에서 Supabase 접속 정보 로드 (실제 배포 시 .env 파일 사용)
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://luokxiiyouqoybyljooa.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx1b2t4aWl5b3Vxb3lieWxqb29hIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQyMDg1NTIsImV4cCI6MjA4OTc4NDU1Mn0.Zuv1g7gjKGGXIkd73HN7wg_AukFQPjfUlnZrMkr4XxI")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 router = APIRouter()
