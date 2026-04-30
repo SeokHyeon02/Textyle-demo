@@ -52,7 +52,7 @@ export default function SearchScreen() {
       formData.append('query', searchText.trim());
 
       const SERVER_IP = "192.168.0.6"; // 🚨 본인 IP 확인!
-      const response = await fetch(`http://${SERVER_IP}:8000/search`, {
+      const response = await fetch(`http://${SERVER_IP}:8001/search`, {
         method: 'POST',
         body: formData,
       });

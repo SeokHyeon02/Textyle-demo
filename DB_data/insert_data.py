@@ -2,6 +2,7 @@ import os
 import sys
 import torch
 import requests
+import numpy as np
 from PIL import Image
 from io import BytesIO
 from transformers import CLIPProcessor, CLIPModel
@@ -31,6 +32,53 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model_id = "openai/clip-vit-base-patch32"
 model = CLIPModel.from_pretrained(model_id).to(device)
 processor = CLIPProcessor.from_pretrained(model_id)
+model.eval()
+
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
+}
+
+MIN_IMAGE_SIDE = 160
+MAX_ASPECT_RATIO = 4.0
+MIN_PIXEL_STD = 8.0
+
+VALIDATION_LABELS_BY_MAIN_CATEGORY = {
+    "상의": [
+        "a product photo of a shirt",
+        "a product photo of a t-shirt",
+        "a product photo of a hoodie",
+        "a product photo of a sweatshirt",
+        "a product photo of a knit sweater",
+    ],
+    "하의": [
+        "a product photo of pants",
+        "a product photo of jeans",
+        "a product photo of shorts",
+        "a product photo of slacks",
+        "a product photo of jogger pants",
+    ],
+    "아우터": [
+        "a product photo of a jacket",
+        "a product photo of a coat",
+        "a product photo of a cardigan",
+        "a product photo of a blazer",
+        "a product photo of a padded jacket",
+    ],
+}
+
+NEGATIVE_VALIDATION_LABELS = [
+    "a photo of food",
+    "a photo of shoes",
+    "a photo of a bag",
+    "a photo of electronics",
+    "a landscape photo",
+    "a portrait photo of a face",
+    "a screenshot of text",
+    "a blank image",
+]
 
 CATEGORY_MAP = {
     # 아우터 (002)
@@ -69,6 +117,100 @@ def get_categories_from_code(category_code: str):
         
     return main_category, sub_category
 
+def download_image(image_url: str):
+    response = requests.get(image_url, timeout=15, headers=REQUEST_HEADERS)
+    response.raise_for_status()
+
+    content_type = response.headers.get("content-type", "").lower()
+    if content_type and "image/" not in content_type:
+        raise ValueError(f"이미지 URL이 아닙니다. content-type={content_type}")
+
+    try:
+        image = Image.open(BytesIO(response.content)).convert("RGB")
+    except Exception as exc:
+        raise ValueError("이미지 파일을 열 수 없습니다.") from exc
+
+    return image
+
+def validate_basic_image_quality(image: Image.Image):
+    width, height = image.size
+    if width < MIN_IMAGE_SIDE or height < MIN_IMAGE_SIDE:
+        return False, f"이미지가 너무 작습니다. size={width}x{height}"
+
+    aspect_ratio = max(width / height, height / width)
+    if aspect_ratio > MAX_ASPECT_RATIO:
+        return False, f"이미지 비율이 비정상적입니다. aspect_ratio={aspect_ratio:.2f}"
+
+    resized = image.resize((96, 96))
+    pixel_std = float(np.array(resized).std())
+    if pixel_std < MIN_PIXEL_STD:
+        return False, f"이미지가 거의 단색이거나 비어 있습니다. pixel_std={pixel_std:.2f}"
+
+    return True, "ok"
+
+def crop_center_region(image: Image.Image):
+    width, height = image.size
+    left = int(width * 0.08)
+    top = int(height * 0.05)
+    right = int(width * 0.92)
+    bottom = int(height * 0.95)
+    return image.crop((left, top, right, bottom))
+
+def validate_clothing_image(image: Image.Image, main_category: str):
+    expected_labels = VALIDATION_LABELS_BY_MAIN_CATEGORY.get(main_category, [])
+    positive_labels = [label for labels in VALIDATION_LABELS_BY_MAIN_CATEGORY.values() for label in labels]
+    prompts = expected_labels + [
+        label for label in positive_labels
+        if label not in expected_labels
+    ] + NEGATIVE_VALIDATION_LABELS
+
+    clip_image = crop_center_region(image)
+    inputs = processor(
+        text=prompts,
+        images=clip_image,
+        return_tensors="pt",
+        padding=True
+    ).to(device)
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+        probs = outputs.logits_per_image.softmax(dim=1)[0]
+
+    expected_count = len(expected_labels)
+    positive_count = len(positive_labels)
+    negative_start = len(prompts) - len(NEGATIVE_VALIDATION_LABELS)
+
+    positive_score = probs[:positive_count].sum().item()
+    expected_score = probs[:expected_count].sum().item() if expected_count else positive_score
+    negative_score = probs[negative_start:].sum().item()
+
+    best_index = int(torch.argmax(probs).item())
+    best_label = prompts[best_index]
+
+    if positive_score < 0.45 or negative_score > positive_score:
+        return False, (
+            "의류 이미지로 보기 어렵습니다. "
+            f"positive={positive_score:.2f}, negative={negative_score:.2f}, best='{best_label}'"
+        )
+
+    if expected_labels and expected_score < 0.20 and negative_score > 0.20:
+        return False, (
+            f"요청 카테고리({main_category})와 이미지가 맞지 않을 가능성이 높습니다. "
+            f"expected={expected_score:.2f}, positive={positive_score:.2f}, best='{best_label}'"
+        )
+
+    return True, (
+        f"positive={positive_score:.2f}, expected={expected_score:.2f}, "
+        f"negative={negative_score:.2f}, best='{best_label}'"
+    )
+
+def validate_image_for_insert(image: Image.Image, main_category: str):
+    ok, reason = validate_basic_image_quality(image)
+    if not ok:
+        return False, reason
+
+    return validate_clothing_image(image, main_category)
+
 def insert_clothes_data(name: str, image_url: str, shop_link: str, main_category: str, sub_category: str, price: int, brand_name: str):
     print(f"🔄 처리 중: [{brand_name}] [{main_category} > {sub_category}] {name} - {price}원")
     
@@ -82,9 +224,14 @@ def insert_clothes_data(name: str, image_url: str, shop_link: str, main_category
 
         # 1. 이미지 URL에서 사진 다운로드
         print("  -> 새 상품 확인됨. 이미지 다운로드 및 벡터 변환 시작...")
-        response = requests.get(image_url)
-        response.raise_for_status()
-        image = Image.open(BytesIO(response.content)).convert("RGB")
+        image = download_image(image_url)
+
+        is_valid_image, validation_reason = validate_image_for_insert(image, main_category)
+        if not is_valid_image:
+            print(f"🚫 잘못된 이미지로 판단되어 DB 삽입을 거부합니다: {validation_reason}")
+            return
+
+        print(f"  -> 이미지 검증 통과: {validation_reason}")
 
         # 2. CLIP 모델로 벡터 변환
         inputs = processor(
