@@ -1,0 +1,597 @@
+﻿import csv
+import json
+import os
+import sys
+import threading
+import time
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+from dotenv import load_dotenv
+from supabase import Client, create_client
+
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+TABLE_NAME = os.environ.get("IMAGE_VIEWER_TABLE", "clothes")
+ID_COLUMN = os.environ.get("IMAGE_VIEWER_ID_COLUMN", "id")
+NAME_COLUMN = os.environ.get("IMAGE_VIEWER_NAME_COLUMN", "name")
+IMAGE_COLUMN = os.environ.get("IMAGE_VIEWER_IMAGE_COLUMN", "image_url")
+SHOP_LINK_COLUMN = os.environ.get("IMAGE_VIEWER_SHOP_LINK_COLUMN", "shop_link")
+PAGE_SIZE = int(os.environ.get("IMAGE_VIEWER_PAGE_SIZE", "50"))
+HOST = os.environ.get("IMAGE_VIEWER_HOST", "127.0.0.1")
+PORT = int(os.environ.get("IMAGE_VIEWER_PORT", "8765"))
+CSV_PATH = os.environ.get(
+    "IMAGE_VIEWER_CSV_PATH",
+    os.path.join(BASE_DIR, "selected_shop_links.csv"),
+)
+
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print(".env 파일에서 SUPABASE_URL 또는 SUPABASE_KEY를 찾을 수 없습니다.")
+    sys.exit(1)
+
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+HTML = """<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DB Image URL Viewer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Arial, "Malgun Gothic", sans-serif;
+      background: #f5f5f2;
+      color: #1f2428;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin: 0 auto 18px;
+      max-width: 1200px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .status {
+      color: #59636e;
+      font-size: 14px;
+      text-align: right;
+      min-width: 260px;
+    }
+    .skip-button {
+      padding: 8px 12px;
+      border: 1px solid #b9b7ad;
+      border-radius: 6px;
+      background: #fff;
+      color: #1f2428;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .skip-button:hover {
+      background: #eeeee8;
+    }
+    .skip-button:disabled {
+      color: #8c959f;
+      cursor: not-allowed;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 14px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      min-height: 230px;
+      overflow: hidden;
+      border: 1px solid #d8d7d0;
+      border-radius: 8px;
+      background: #fff;
+      cursor: pointer;
+    }
+    .card:focus {
+      outline: 3px solid #2f6feb;
+      outline-offset: 2px;
+    }
+    .image-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 5;
+      background: #ecebe6;
+    }
+    .image-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .badge {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      padding: 4px 7px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.72);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      z-index: 2;
+    }
+    .product-name {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      padding: 8px 9px;
+      background: rgba(0, 0, 0, 0.72);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+      text-align: left;
+      overflow-wrap: anywhere;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .meta {
+      padding: 9px 10px 10px;
+      font-size: 12px;
+      color: #4d5560;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
+    }
+    .button-row {
+      display: flex;
+      gap: 8px;
+      margin: 0 10px 10px;
+    }
+    .save-button,
+    .delete-button {
+      flex: 1 1 0;
+      padding: 8px 10px;
+      border: 1px solid #b9b7ad;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .save-button {
+      background: #f7f7f4;
+      color: #1f2428;
+    }
+    .delete-button {
+      background: #fff1f1;
+      border-color: #d9a8a8;
+      color: #8f1d1d;
+    }
+    .save-button:hover {
+      background: #eeeee8;
+    }
+    .delete-button:hover {
+      background: #fde5e5;
+    }
+    .save-button:focus,
+    .delete-button:focus {
+      outline: 3px solid #2f6feb;
+      outline-offset: 2px;
+    }
+    .save-button:disabled,
+    .delete-button:disabled {
+      color: #8c959f;
+      cursor: not-allowed;
+    }
+    .empty {
+      display: none;
+      max-width: 1200px;
+      margin: 36px auto 0;
+      color: #59636e;
+      text-align: center;
+      font-size: 15px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DB Image URL Viewer</h1>
+    <div class="header-actions">
+      <button class="skip-button" id="skipButton" type="button">50개 건너뛰기</button>
+      <div class="status" id="status">불러오는 중...</div>
+    </div>
+  </header>
+  <main class="grid" id="grid"></main>
+  <p class="empty" id="empty">더 이상 표시할 image_url이 없습니다.</p>
+
+  <script>
+    const grid = document.getElementById("grid");
+    const statusEl = document.getElementById("status");
+    const emptyEl = document.getElementById("empty");
+    const skipButton = document.getElementById("skipButton");
+
+    let offset = 0;
+    let batchNumber = 0;
+    let loading = false;
+    let finished = false;
+    let currentCount = 0;
+    let remainingCount = null;
+
+    skipButton.addEventListener("click", () => {
+      if (loading || finished) return;
+      grid.innerHTML = "";
+      currentCount = 0;
+      updateStatus("50개 건너뜀");
+      loadBatch();
+    });
+
+    function updateStatus(message) {
+      const remainingText =
+        remainingCount === null ? "계산 중" : `${remainingCount}개`;
+      statusEl.textContent =
+        `${message} / 현재 ${currentCount}개 / 남은 ${remainingText}`;
+      skipButton.disabled = loading || finished || currentCount === 0;
+    }
+
+    async function loadBatch() {
+      if (loading || finished) return;
+      loading = true;
+      updateStatus("불러오는 중...");
+
+      try {
+        const response = await fetch(`/api/images?offset=${offset}`);
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+
+        const payload = await response.json();
+        offset = payload.next_offset;
+        currentCount = payload.images.length;
+        remainingCount = payload.remaining_count;
+        batchNumber += 1;
+
+        if (payload.images.length === 0) {
+          finished = true;
+          currentCount = 0;
+          remainingCount = 0;
+          updateStatus(`완료: ${payload.total_loaded}개 확인`);
+          emptyEl.style.display = "block";
+          return;
+        }
+
+        renderImages(payload.images);
+        updateStatus(`${batchNumber}번째 묶음 표시`);
+      } catch (error) {
+        statusEl.textContent = "이미지를 불러오지 못했습니다.";
+        console.error(error);
+      } finally {
+        loading = false;
+        skipButton.disabled = finished || currentCount === 0;
+      }
+    }
+
+    function renderImages(images) {
+      emptyEl.style.display = "none";
+      grid.innerHTML = "";
+
+      images.forEach((item, index) => {
+        const card = document.createElement("button");
+        card.className = "card";
+        card.type = "button";
+        card.title = "클릭하면 화면에서 제거됩니다.";
+
+        const imageWrap = document.createElement("div");
+        imageWrap.className = "image-wrap";
+
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = String(index + 1);
+
+        const img = document.createElement("img");
+        img.src = item.image_url;
+        img.alt = item.name || `DB image ${item.absolute_index}`;
+        img.loading = "eager";
+        img.referrerPolicy = "no-referrer";
+
+        const productName = document.createElement("div");
+        productName.className = "product-name";
+        productName.textContent = item.name || "제품명 없음";
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `id=${item.id} / ${item.image_url}`;
+
+        const buttonRow = document.createElement("div");
+        buttonRow.className = "button-row";
+
+        const saveButton = document.createElement("button");
+        saveButton.className = "save-button";
+        saveButton.type = "button";
+        saveButton.textContent = item.shop_link ? "shop_link 저장" : "shop_link 없음";
+        saveButton.disabled = !item.shop_link;
+
+        const deleteButton = document.createElement("button");
+        deleteButton.className = "delete-button";
+        deleteButton.type = "button";
+        deleteButton.textContent = "삭제";
+
+        saveButton.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          saveButton.disabled = true;
+          deleteButton.disabled = true;
+          saveButton.textContent = "저장 중";
+
+          try {
+            await saveCsvValue(item.id, item.shop_link, "");
+            saveButton.textContent = "저장됨";
+            card.remove();
+            loadNextBatchIfCurrentBatchCleared();
+          } catch (error) {
+            console.error(error);
+            saveButton.disabled = false;
+            deleteButton.disabled = false;
+            saveButton.textContent = "저장 실패";
+            setTimeout(() => {
+              saveButton.textContent = "shop_link 저장";
+            }, 1200);
+          }
+        });
+
+        deleteButton.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          saveButton.disabled = true;
+          deleteButton.disabled = true;
+          deleteButton.textContent = "저장 중";
+
+          try {
+            await saveCsvValue(item.id, item.shop_link || "", "삭제");
+            deleteButton.textContent = "저장됨";
+            card.remove();
+            loadNextBatchIfCurrentBatchCleared();
+          } catch (error) {
+            console.error(error);
+            saveButton.disabled = !item.shop_link;
+            deleteButton.disabled = false;
+            deleteButton.textContent = "저장 실패";
+            setTimeout(() => {
+              deleteButton.textContent = "삭제";
+            }, 1200);
+          }
+        });
+
+        imageWrap.append(badge, img, productName);
+        buttonRow.append(saveButton, deleteButton);
+        card.append(imageWrap, meta, buttonRow);
+        card.addEventListener("click", () => {
+          card.remove();
+          loadNextBatchIfCurrentBatchCleared();
+        });
+        grid.appendChild(card);
+      });
+    }
+
+    function loadNextBatchIfCurrentBatchCleared() {
+      currentCount = grid.children.length;
+      if (currentCount === 0) {
+        updateStatus("현재 묶음 완료");
+        loadBatch();
+      } else {
+        updateStatus(`${batchNumber}번째 묶음 표시`);
+      }
+    }
+
+    async function saveCsvValue(id, shopLink, action) {
+      const response = await fetch("/api/save-url", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ id, shop_link: shopLink, action }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+    }
+
+    loadBatch();
+  </script>
+</body>
+</html>
+"""
+
+
+def fetch_image_urls(offset: int, limit: int):
+    start = max(offset, 0)
+    end = start + limit - 1
+
+    response = (
+        supabase.table(TABLE_NAME)
+        .select(f"{ID_COLUMN}, {NAME_COLUMN}, {IMAGE_COLUMN}, {SHOP_LINK_COLUMN}")
+        .neq(IMAGE_COLUMN, "")
+        .order(ID_COLUMN)
+        .range(start, end)
+        .execute()
+    )
+
+    rows = response.data or []
+    images = []
+    for row_index, row in enumerate(rows):
+        image_url = row.get(IMAGE_COLUMN)
+        if not image_url:
+            continue
+        shop_link = row.get(SHOP_LINK_COLUMN) or ""
+        images.append(
+            {
+                "id": row.get(ID_COLUMN),
+                "name": row.get(NAME_COLUMN) or "",
+                "image_url": image_url,
+                "shop_link": shop_link,
+                "absolute_index": start + row_index + 1,
+            }
+        )
+
+    return images
+
+
+def fetch_total_image_count():
+    response = (
+        supabase.table(TABLE_NAME)
+        .select(ID_COLUMN, count="exact")
+        .neq(IMAGE_COLUMN, "")
+        .range(0, 0)
+        .execute()
+    )
+    return response.count or 0
+
+
+def save_csv_value(row_id, shop_link: str, action: str = ""):
+    if not row_id:
+        raise ValueError("row_id is empty")
+
+    file_exists = os.path.exists(CSV_PATH)
+    needs_header = not file_exists or os.path.getsize(CSV_PATH) == 0
+
+    with open(CSV_PATH, "a", newline="", encoding="utf-8-sig") as csv_file:
+        writer = csv.writer(csv_file)
+        if needs_header:
+            writer.writerow(["saved_at", "id", "shop_link"])
+        if action:
+            writer.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), row_id, shop_link, action])
+        else:
+            writer.writerow([time.strftime("%Y-%m-%d %H:%M:%S"), row_id, shop_link])
+
+
+class ImageViewerHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed_url = urlparse(self.path)
+
+        if parsed_url.path == "/":
+            self.send_html(HTML)
+            return
+
+        if parsed_url.path == "/api/images":
+            self.send_images(parsed_url.query)
+            return
+
+        self.send_error(404, "Not Found")
+
+    def do_POST(self):
+        parsed_url = urlparse(self.path)
+
+        if parsed_url.path == "/api/save-url":
+            self.save_url()
+            return
+
+        self.send_error(404, "Not Found")
+
+    def log_message(self, fmt, *args):
+        return
+
+    def send_html(self, content: str):
+        encoded = content.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def send_json(self, status_code: int, payload):
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def send_images(self, query: str):
+        params = parse_qs(query)
+        offset = int(params.get("offset", ["0"])[0])
+
+        try:
+            images = fetch_image_urls(offset, PAGE_SIZE)
+            total_count = fetch_total_image_count()
+            next_offset = offset + PAGE_SIZE
+            remaining_count = max(total_count - next_offset, 0)
+            self.send_json(
+                200,
+                {
+                    "images": images,
+                    "next_offset": next_offset,
+                    "total_loaded": offset + len(images),
+                    "total_count": total_count,
+                    "remaining_count": remaining_count,
+                },
+            )
+        except Exception as exc:
+            self.send_json(500, {"error": str(exc)})
+
+    def save_url(self):
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(content_length).decode("utf-8")
+            payload = json.loads(raw_body or "{}")
+            row_id = payload.get("id", "")
+            shop_link = payload.get("shop_link", "")
+            action = payload.get("action", "")
+            save_csv_value(row_id, shop_link, action)
+            self.send_json(200, {"saved": True, "csv_path": CSV_PATH})
+        except Exception as exc:
+            self.send_json(500, {"error": str(exc)})
+
+
+def open_browser(url: str):
+    time.sleep(0.5)
+    webbrowser.open(url)
+
+
+def main():
+    server = ThreadingHTTPServer((HOST, PORT), ImageViewerHandler)
+    url = f"http://{HOST}:{PORT}"
+    print(f"DB image_url viewer started: {url}")
+    print("이미지를 클릭하면 화면에서 제거됩니다. 50개가 모두 사라지면 다음 50개를 불러옵니다.")
+    print(f"CSV 저장 위치: {CSV_PATH}")
+
+    threading.Thread(target=open_browser, args=(url,), daemon=True).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n서버를 종료합니다.")
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
+
+

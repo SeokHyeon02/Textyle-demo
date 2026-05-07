@@ -18,17 +18,14 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("SUPABASE_URL 또는 SUPABASE_KEY가 .env에 없습니다.")
+    raise ValueError("SUPABASE_URL or SUPABASE_KEY is missing in .env")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 MODEL_ID = os.environ.get("FASHION_CLIP_MODEL_ID", "patrickjohncyh/fashion-clip")
 TARGET_COLUMN = "fashion_embedding"
-PAGE_SIZE = 1000
-FETCH_ONLY_MISSING = os.environ.get("FETCH_ONLY_MISSING_FASHION_EMBEDDING", "true").strip().lower() in {
-    "1", "true", "yes", "y"
-}
-ORDER_COLUMN = os.environ.get("FASHION_EMBEDDING_ORDER_COLUMN", "image_url")
+ORDER_COLUMN = "image_url"
+PAGE_SIZE = int(os.environ.get("FASHION_EMBEDDING_PAGE_SIZE", "1000"))
 
 IMAGE_URL_PATTERN = re.compile(r"https?://[^\"'\s<>]+", re.IGNORECASE)
 DIRECT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
@@ -62,7 +59,7 @@ def extract_first_image_url_from_html(html: str, base_url: str):
 
 def download_product_image(image_or_product_url: str):
     if not image_or_product_url:
-        raise ValueError("image_url이 비어 있습니다.")
+        raise ValueError("image_url is empty")
 
     headers = {
         "User-Agent": (
@@ -80,7 +77,7 @@ def download_product_image(image_or_product_url: str):
 
     image_url = extract_first_image_url_from_html(first_response.text, image_or_product_url)
     if not image_url:
-        raise ValueError("상품 페이지에서 대표 이미지 URL을 찾지 못했습니다.")
+        raise ValueError("Could not find an image URL from the product page")
 
     image_response = requests.get(image_url, timeout=15, headers=headers)
     image_response.raise_for_status()
@@ -113,16 +110,16 @@ def extract_feature_tensor(model_output):
     if isinstance(model_output, (tuple, list)) and model_output:
         return model_output[0]
 
-    raise TypeError(f"임베딩 텐서를 찾지 못했습니다: {type(model_output)}")
+    raise TypeError(f"Cannot find feature tensor from {type(model_output)}")
 
 
 def load_fashion_clip():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"FashionCLIP 모델 로드 중... model={MODEL_ID}, device={device}")
+    print(f"Loading FashionCLIP... model={MODEL_ID}, device={device}")
     model = CLIPModel.from_pretrained(MODEL_ID).to(device)
     processor = CLIPProcessor.from_pretrained(MODEL_ID)
     model.eval()
-    print("FashionCLIP 모델 로드 완료")
+    print("FashionCLIP loaded")
     return model, processor, device
 
 
@@ -137,61 +134,72 @@ def get_fashion_image_embedding(image: Image.Image, model, processor, device):
     return image_features.squeeze().tolist()
 
 
-def update_all_fashion_embeddings():
-    model, processor, device = load_fashion_clip()
-
-    print("Supabase에서 데이터를 가져옵니다 (1000개씩 분할 로드)...")
-    print(f"비어 있는 fashion_embedding만 처리: {FETCH_ONLY_MISSING}")
-    print(f"조회 정렬 기준: {ORDER_COLUMN}")
-
+def fetch_all_items():
     all_items = []
-    start = 0
-    limit = PAGE_SIZE
+    last_order_value = None
+    select_columns = ["name", "image_url"]
+    if ORDER_COLUMN not in select_columns:
+        select_columns.append(ORDER_COLUMN)
 
     while True:
         query = (
             supabase
             .table("clothes")
-            .select(f"name, image_url, {TARGET_COLUMN}")
+            .select(", ".join(select_columns))
             .order(ORDER_COLUMN, desc=False)
-            .range(start, start + limit - 1)
+            .limit(PAGE_SIZE)
         )
 
-        if FETCH_ONLY_MISSING:
-            query = query.is_(TARGET_COLUMN, "null")
+        if last_order_value is not None:
+            query = query.gt(ORDER_COLUMN, last_order_value)
 
         response = query.execute()
-
-        data = response.data
+        data = response.data or []
         if not data:
             break
 
         all_items.extend(data)
-        print(f"누적 {len(all_items)}개 데이터 로드 완료...")
+        print(f"Loaded rows: {len(all_items)}")
 
-        if len(data) < limit:
+        if len(data) < PAGE_SIZE:
             break
 
-        start += limit
+        next_order_value = data[-1].get(ORDER_COLUMN)
+        if next_order_value is None or next_order_value == last_order_value:
+            raise RuntimeError(f"Cannot continue pagination with ORDER_COLUMN={ORDER_COLUMN}")
+        last_order_value = next_order_value
 
+    return all_items
+
+
+def update_all_fashion_embeddings():
+    model, processor, device = load_fashion_clip()
+
+    print("Loading all clothes rows from Supabase.")
+    print("Every row will be regenerated, even if fashion_embedding is already filled.")
+    print(f"Target column: {TARGET_COLUMN}")
+    print(f"Order column: {ORDER_COLUMN}")
+    print(f"Page size: {PAGE_SIZE}")
+
+    all_items = fetch_all_items()
     if not all_items:
-        print("업데이트할 데이터가 없습니다.")
+        print("No rows to update.")
         return
 
-    print(f"\n총 {len(all_items)}개의 fashion_embedding 업데이트를 시작합니다.\n")
+    print(f"\nStarting fashion_embedding update for {len(all_items)} rows.\n")
 
     failed_items = []
 
     for index, item in enumerate(all_items, 1):
-        name = item.get("name") or "이름 없음"
+        name = item.get("name") or "unnamed"
         image_url = item.get("image_url")
 
         if not image_url:
-            failed_items.append((name, "image_url 없음"))
-            print(f"[{index}/{len(all_items)}] 건너뜀: {name} - image_url 없음")
+            failed_items.append((name, "image_url missing"))
+            print(f"[{index}/{len(all_items)}] skipped: {name} - image_url missing")
             continue
 
-        print(f"[{index}/{len(all_items)}] 업데이트 중: {name}")
+        print(f"[{index}/{len(all_items)}] updating: {name}")
 
         try:
             image = download_product_image(image_url)
@@ -217,31 +225,29 @@ def update_all_fashion_embeddings():
             verified_item = verify_response.data[0] if verify_response.data else {}
             saved_embedding = verified_item.get(TARGET_COLUMN)
             saved_dim = len(saved_embedding) if isinstance(saved_embedding, list) else None
-            saved_preview = str(saved_embedding)[:24] if saved_embedding is not None else "None"
 
             print(
                 "   -> "
                 f"embedding_dim={len(embedding)}, "
                 f"db_embedding_is_null={saved_embedding is None}, "
                 f"db_embedding_dim={saved_dim}, "
-                f"db_embedding_preview={saved_preview}, "
                 f"returned_rows={len(update_response.data or [])}, "
                 f"verified_rows={len(verify_response.data or [])}"
             )
 
         except Exception as exc:
             failed_items.append((name, str(exc)))
-            print(f"[{index}/{len(all_items)}] 실패: {name} - {exc}")
+            print(f"[{index}/{len(all_items)}] failed: {name} - {exc}")
 
-    print("\nFashionCLIP 임베딩 업데이트 완료")
-    print(f"실패 상품: {len(failed_items)}개")
+    print("\nFashionCLIP embedding update complete")
+    print(f"Failed items: {len(failed_items)}")
 
     if failed_items:
         failed_log_path = os.path.join(BASE_DIR, "fashion_embedding_failed.log")
         with open(failed_log_path, "w", encoding="utf-8") as log_file:
             for name, reason in failed_items:
                 log_file.write(f"{name}\t{reason}\n")
-        print(f"실패 목록 저장: {failed_log_path}")
+        print(f"Failed item log saved: {failed_log_path}")
 
 
 if __name__ == "__main__":

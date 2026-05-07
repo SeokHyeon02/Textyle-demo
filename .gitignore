@@ -11,3 +11,6 @@ __pycache__/
 # 🚨 Node.js 라이브러리 폴더 제외 (추가된 부분)
 node_modules/
 .env
+DB_data/*.csv
+DB_data/image/
+DB_data/image_jpg_700/

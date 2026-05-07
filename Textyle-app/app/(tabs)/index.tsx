@@ -8,6 +8,7 @@ import { supabase } from '../../supabase';
 export default function SearchScreen() {
   const [session, setSession] = useState<any>(null);
   const [imageUri, setImageUri] = useState<string | null>(null);
+  const [selectedImage, setSelectedImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [searchText, setSearchText] = useState('');
   
   const [isLoading, setIsLoading] = useState(false);
@@ -24,9 +25,12 @@ export default function SearchScreen() {
       allowsEditing: true,
       aspect: [4, 5],
       quality: 0.8,
+      preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Automatic,
     });
     if (!result.canceled) {
-      setImageUri(result.assets[0].uri);
+      const asset = result.assets[0];
+      setImageUri(asset.uri);
+      setSelectedImage(asset);
     }
   };
 
@@ -40,18 +44,19 @@ export default function SearchScreen() {
 
     try {
       const formData = new FormData();
-      const uriParts = imageUri.split('.');
-      const fileType = uriParts[uriParts.length - 1];
+      const uploadUri = selectedImage?.uri || imageUri;
+      const fileName = selectedImage?.fileName || 'photo.jpg';
+      const mimeType = selectedImage?.mimeType || 'image/jpeg';
       
       formData.append('file', {
-        uri: imageUri,
-        name: `photo.${fileType}`,
-        type: `image/${fileType}`,
+        uri: uploadUri,
+        name: fileName,
+        type: mimeType,
       } as any);
 
       formData.append('query', searchText.trim());
 
-      const SERVER_IP = "192.168.0.6"; // 🚨 본인 IP 확인!
+      const SERVER_IP = "192.168.0.7"; // 🚨 본인 IP 확인!
       const response = await fetch(`http://${SERVER_IP}:8001/search`, {
         method: 'POST',
         body: formData,

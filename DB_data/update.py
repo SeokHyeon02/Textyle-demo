@@ -13,16 +13,16 @@ from math import sqrt
 from sklearn.cluster import KMeans
 
 # -------------------------------------------------------------
-# 1. 설정 및 DB 연결
+# 1. Environment and database connection
 # -------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, '.env'))
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")  # service_role 키 확인 필수
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")  # service_role key required
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("SUPABASE_URL 또는 SUPABASE_KEY가 .env에 없습니다.")
+    raise ValueError("SUPABASE_URL or SUPABASE_KEY is missing in .env.")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -31,18 +31,28 @@ OVERWRITE_ATTRIBUTES = os.environ.get("OVERWRITE_ATTRIBUTES", "false").strip().l
 }
 
 # -------------------------------------------------------------
-# 2. AI 모델 로드
+# 2. Model configuration
 # -------------------------------------------------------------
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model_id = "openai/clip-vit-base-patch32"
+model_id = os.environ.get("FASHION_CLIP_MODEL_ID", "patrickjohncyh/fashion-clip")
+TARGET_EMBEDDING_COLUMN = "fashion_embedding"
+ORDER_COLUMN = os.environ.get("FASHION_EMBEDDING_ORDER_COLUMN", "image_url")
+PAGE_SIZE = int(os.environ.get("ATTRIBUTE_UPDATE_PAGE_SIZE", "1000"))
+SCRIPT_VERSION = "update.py fashion-attribute-update-2026-05-04"
+MATERIAL_DB_COLUMN = "material"
+FIT_DB_COLUMN = "fit"
+DELETE_OPTION_COUNT_ROWS = os.environ.get("DELETE_OPTION_COUNT_ROWS", "false").strip().lower() in {
+    "1", "true", "yes", "y"
+}
+DRY_RUN = os.environ.get("DRY_RUN", "false").strip().lower() in {
+    "1", "true", "yes", "y"
+}
 
-print(f"⏳ AI 모델을 불러오는 중입니다... (사용 장치: {device})")
-model = CLIPModel.from_pretrained(model_id).to(device)
-processor = CLIPProcessor.from_pretrained(model_id)
-model.eval()
+model = None
+processor = None
 
 # -------------------------------------------------------------
-# 3. 라벨 설정
+# 3. Attribute labels and keyword settings
 # -------------------------------------------------------------
 ATTRIBUTE_LABELS = {
     "pattern": {
@@ -109,7 +119,7 @@ ATTRIBUTE_LABELS = {
     },
 }
 
-# 여러 프롬프트를 평균낸 뒤 label 단위 softmax를 사용하므로 기존보다 threshold를 조금 높게 둔다.
+# Thresholds are kept for legacy attribute helpers.
 ATTRIBUTE_THRESHOLDS = {
     "pattern": 0.18,
     "fit": 0.16,
@@ -149,184 +159,137 @@ DENIM_COLOR_REFERENCES = {
 }
 
 COLOR_KEYWORDS = {
-    "black": [
-        "black", "blk", "블랙", "검정", "검정색", "흑색",
-    ],
-    "white": [
-        "white", "wht", "화이트", "흰색", "백색", "아이보리", "ivory",
-    ],
-    "gray": [
-        "gray", "grey", "charcoal", "melange", "그레이", "회색", "차콜", "멜란지",
-    ],
-    "red": [
-        "red", "burgundy", "wine", "레드", "빨강", "빨간색", "버건디", "와인",
-    ],
-    "orange": [
-        "orange", "오렌지", "주황", "주황색",
-    ],
-    "yellow": [
-        "yellow", "mustard", "옐로우", "노랑", "노란색", "머스타드",
-    ],
-    "green": [
-        "green", "mint", "그린", "초록", "녹색", "민트",
-    ],
-    "khaki": [
-        "khaki", "olive", "카키", "올리브",
-    ],
-    "blue": [
-        "blue", "sky blue", "sax", "블루", "파랑", "파란색", "스카이블루", "소라",
-    ],
-    "navy": [
-        "navy", "네이비", "남색",
-    ],
-    "purple": [
-        "purple", "violet", "lavender", "퍼플", "보라", "보라색", "바이올렛", "라벤더",
-    ],
-    "pink": [
-        "pink", "핑크", "분홍", "분홍색",
-    ],
-    "brown": [
-        "brown", "camel", "mocha", "브라운", "갈색", "카멜", "모카",
-    ],
-    "beige": [
-        "beige", "cream", "sand", "oatmeal", "베이지", "크림", "샌드", "오트밀",
-    ],
-    "indigo": [
-        "indigo", "raw denim", "deep blue denim", "인디고", "생지", "진청",
-    ],
-    "camouflage": [
-        "camouflage", "camo", "카모", "카모플라주", "위장", "밀리터리",
-    ],
+    "black": ["black", "blk", "bk", "black denim", "washed black"],
+    "white": ["white", "wht", "wh", "ivory", "off white", "offwhite", "cream white"],
+    "gray": ["gray", "grey", "charcoal", "melange", "ash gray"],
+    "red": ["red", "burgundy", "wine"],
+    "orange": ["orange"],
+    "yellow": ["yellow", "mustard"],
+    "green": ["green", "mint"],
+    "khaki": ["khaki", "olive"],
+    "blue": ["blue", "sky blue", "sax", "light denim", "mid blue", "medium blue"],
+    "navy": ["navy", "nvy"],
+    "purple": ["purple", "violet", "lavender"],
+    "pink": ["pink"],
+    "brown": ["brown", "camel", "mocha", "brn"],
+    "beige": ["beige", "cream", "sand", "oatmeal"],
+    "indigo": ["indigo", "raw denim", "deep blue denim", "dark indigo"],
+    "camouflage": ["camouflage", "camo"],
 }
 
 MATERIAL_KEYWORDS = {
-    "faux_leather": [
-        "faux leather", "fake leather", "synthetic leather", "pu leather",
-        "비건 레더", "인조가죽", "합성가죽"
-    ],
-    "leather": [
-        "leather", "real leather", "genuine leather", "레더", "가죽"
-    ],
-    "denim": [
-        "denim", "jean", "jeans", "raw denim", "데님", "청자켓", "청바지", "청", "생지", "진청", "중청", "연청", "흑청"
-    ],
-    "cotton": ["cotton", "코튼", "면"],
-    "wool": ["wool", "울", "모직"],
-    "linen": ["linen", "린넨"],
-    "fleece": ["fleece", "플리스", "후리스"],
-    "corduroy": ["corduroy", "코듀로이", "골덴"],
-    "suede": ["suede", "스웨이드"],
-    "nylon": ["nylon", "나일론"],
-    "polyester": ["polyester", "폴리에스터", "폴리"],
-    "cashmere": ["cashmere", "캐시미어"],
-    "silk": ["silk", "실크"],
-    "tweed": ["tweed", "트위드"],
+    "faux_leather": ["faux leather", "fake leather", "synthetic leather", "pu leather", "vegan leather", "eco leather", "artificial leather"],
+    "leather": ["leather", "real leather", "genuine leather", "goat leather", "goat skin", "goatskin", "cowhide", "cow leather", "lambskin", "lamb leather", "sheep leather", "sheepskin"],
+    "denim": ["denim", "jean", "jeans", "raw denim", "black denim", "washed denim", "selvedge", "selvage"],
+    "cotton": ["cotton", "cotton 100", "100 cotton"],
+    "wool": ["wool", "wool blend", "merino", "knit"],
+    "linen": ["linen"],
+    "fleece": ["fleece", "boa fleece"],
+    "corduroy": ["corduroy"],
+    "suede": ["suede"],
+    "nylon": ["nylon"],
+    "polyester": ["polyester", "poly"],
+    "cashmere": ["cashmere"],
+    "silk": ["silk"],
+    "tweed": ["tweed"],
 }
 
 EXTRA_COLOR_KEYWORDS = {
-    "black": [
-        "bk", "black denim", "blackdenim", "washed black", "dark black",
-        "\ube14\ub799", "\uac80\uc815", "\uac80\uc815\uc0c9", "\uae4c\ub9cc\uc0c9", "\ud751\uc0c9", "\ud751\uccad",
-    ],
-    "white": [
-        "wh", "ivory", "off white", "offwhite", "cream white",
-        "\ud654\uc774\ud2b8", "\ud770\uc0c9", "\ud558\uc580\uc0c9", "\ubc31\uc0c9", "\uc544\uc774\ubcf4\ub9ac",
-    ],
-    "gray": [
-        "gry", "grey", "charcoal", "melange", "ash gray",
-        "\uadf8\ub808\uc774", "\ud68c\uc0c9", "\ucc28\ucf5c", "\uba5c\ub780\uc9c0",
-    ],
-    "indigo": [
-        "raw denim", "rawdenim", "dark denim", "deep blue denim", "dark indigo",
-        "\uc778\ub514\uace0", "\uc0dd\uc9c0", "\uc9c4\uccad",
-    ],
-    "blue": [
-        "light denim", "light blue denim", "mid blue", "medium blue", "sax", "sky blue",
-        "\ube14\ub8e8", "\ud30c\ub791", "\ud30c\ub780\uc0c9", "\uc18c\ub77c", "\uc2a4\uce74\uc774\ube14\ub8e8", "\uc911\uccad", "\uc5f0\uccad",
-    ],
-    "navy": ["nvy", "\ub124\uc774\ube44", "\ub0a8\uc0c9"],
-    "khaki": ["olive", "\uce74\ud0a4", "\uc62c\ub9ac\ube0c"],
-    "beige": ["oatmeal", "sand", "cream", "\ubca0\uc774\uc9c0", "\uc624\ud2b8\ubc00", "\uc0cc\ub4dc", "\ud06c\ub9bc"],
-    "brown": ["brn", "camel", "mocha", "\ube0c\ub77c\uc6b4", "\uac08\uc0c9", "\uce74\uba5c", "\ubaa8\uce74"],
-    "red": ["burgundy", "wine", "\ub808\ub4dc", "\ube68\uac15", "\ube68\uac04\uc0c9", "\ubc84\uac74\ub514", "\uc640\uc778"],
-    "green": ["mint", "\uadf8\ub9b0", "\ucd08\ub85d", "\ub179\uc0c9", "\ubbfc\ud2b8"],
-    "yellow": ["mustard", "\uc610\ub85c\uc6b0", "\ub178\ub791", "\ub178\ub780\uc0c9", "\uba38\uc2a4\ud0c0\ub4dc"],
-    "pink": ["\ud551\ud06c", "\ubd84\ud64d", "\ubd84\ud64d\uc0c9"],
-    "purple": ["violet", "lavender", "\ud37c\ud50c", "\ubcf4\ub77c", "\ubcf4\ub77c\uc0c9", "\ubc14\uc774\uc62c\ub81b", "\ub77c\ubca4\ub354"],
-    "orange": ["\uc624\ub80c\uc9c0", "\uc8fc\ud669", "\uc8fc\ud669\uc0c9"],
-    "camouflage": ["camo", "\uce74\ubaa8", "\uce74\ubaa8\ud50c\ub77c\uc8fc", "\uc704\uc7a5", "\ubc00\ub9ac\ud130\ub9ac"],
+    "black": ["\\ube14\\ub799", "\\uac80\\uc815", "\\uac80\\uc815\\uc0c9", "\\uae4c\\ub9cc\\uc0c9", "\\ud751\\uc0c9", "\\ud751\\uccad"],
+    "white": ["\\ud654\\uc774\\ud2b8", "\\ud770\\uc0c9", "\\ud558\\uc580\\uc0c9", "\\ubc31\\uc0c9", "\\uc544\\uc774\\ubcf4\\ub9ac"],
+    "gray": ["\\uadf8\\ub808\\uc774", "\\ud68c\\uc0c9", "\\ucc28\\ucf5c", "\\uba5c\\ub780\\uc9c0"],
+    "indigo": ["\\uc778\\ub514\\uace0", "\\uc0dd\\uc9c0", "\\uc9c4\\uccad"],
+    "blue": ["\\ube14\\ub8e8", "\\ud30c\\ub791", "\\ud30c\\ub780\\uc0c9", "\\uc18c\\ub77c", "\\uc2a4\\uce74\\uc774\\ube14\\ub8e8", "\\uc911\\uccad", "\\uc5f0\\uccad"],
+    "navy": ["\\ub124\\uc774\\ube44", "\\ub0a8\\uc0c9"],
+    "khaki": ["\\uce74\\ud0a4", "\\uc62c\\ub9ac\\ube0c"],
+    "beige": ["\\ubca0\\uc774\\uc9c0", "\\uc624\\ud2b8\\ubc00", "\\uc0cc\\ub4dc", "\\ud06c\\ub9bc"],
+    "brown": ["\\ube0c\\ub77c\\uc6b4", "\\uac08\\uc0c9", "\\uce74\\uba5c", "\\ubaa8\\uce74"],
+    "red": ["\\ub808\\ub4dc", "\\ube68\\uac15", "\\ube68\\uac04\\uc0c9", "\\ubc84\\uac74\\ub514", "\\uc640\\uc778"],
+    "green": ["\\uadf8\\ub9b0", "\\ucd08\\ub85d", "\\ub179\\uc0c9", "\\ubbfc\\ud2b8"],
+    "yellow": ["\\uc610\\ub85c\\uc6b0", "\\ub178\\ub791", "\\ub178\\ub780\\uc0c9", "\\uba38\\uc2a4\\ud0c0\\ub4dc"],
+    "pink": ["\\ud551\\ud06c", "\\ubd84\\ud64d", "\\ubd84\\ud64d\\uc0c9"],
+    "purple": ["\\ud37c\\ud50c", "\\ubcf4\\ub77c", "\\ubcf4\\ub77c\\uc0c9", "\\ubc14\\uc774\\uc62c\\ub81b", "\\ub77c\\ubca4\\ub354"],
+    "orange": ["\\uc624\\ub80c\\uc9c0", "\\uc8fc\\ud669", "\\uc8fc\\ud669\\uc0c9"],
+    "camouflage": ["\\uce74\\ubaa8", "\\uce74\\ubaa8\\ud50c\\ub77c\\uc8fc", "\\uc704\\uc7a5", "\\ubc00\\ub9ac\\ud130\\ub9ac"],
 }
 
 EXTRA_MATERIAL_KEYWORDS = {
-    "faux_leather": [
-        "vegan leather", "eco leather", "artificial leather",
-        "\ube44\uac74\ub808\ub354", "\uc778\uc870\uac00\uc8fd", "\ud569\uc131\uac00\uc8fd", "\uc5d0\ucf54\ub808\ub354",
-    ],
-    "leather": [
-        "goat leather", "goat skin", "goatskin", "cowhide", "cow leather",
-        "lambskin", "lamb leather", "sheep leather", "sheepskin", "real leather",
-        "\ub808\ub354", "\uac00\uc8fd", "\uace0\ud2b8", "\uc591\uac00\uc8fd", "\uc18c\uac00\uc8fd", "\ub7a8\uc2a4\ud0a8", "\uce74\uc6b0\ud558\uc774\ub4dc",
-    ],
-    "denim": [
-        "black denim", "raw denim", "washed denim", "selvedge", "selvage",
-        "\ub370\ub2d8", "\uccad\ubc14\uc9c0", "\uccad\uc790\ucf13", "\ud751\uccad", "\uc0dd\uc9c0", "\uc9c4\uccad", "\uc911\uccad", "\uc5f0\uccad",
-    ],
-    "cotton": ["cotton 100", "100 cotton", "\ucf54\ud2bc", "\uba74", "\uba74 100", "\uba74100"],
-    "wool": ["wool blend", "merino", "knit", "\uc6b8", "\uc6b8\ube14\ub80c\ub4dc", "\uba54\ub9ac\ub178", "\ub2c8\ud2b8", "\ubaa8\uc9c1"],
-    "linen": ["\ub9b0\ub128", "\ub9ac\ub128"],
-    "fleece": ["boa fleece", "\ud50c\ub9ac\uc2a4", "\ud6c4\ub9ac\uc2a4", "\ubcf4\uc544"],
-    "corduroy": ["\ucf54\ub4c0\ub85c\uc774", "\uace8\ub374"],
-    "suede": ["\uc2a4\uc6e8\uc774\ub4dc"],
-    "nylon": ["\ub098\uc77c\ub860"],
-    "polyester": ["poly", "\ud3f4\ub9ac\uc5d0\uc2a4\ud130", "\ud3f4\ub9ac"],
-    "cashmere": ["\uce90\uc2dc\ubbf8\uc5b4"],
-    "silk": ["\uc2e4\ud06c"],
-    "tweed": ["\ud2b8\uc704\ub4dc"],
+    "faux_leather": ["\\ube44\\uac74\\ub808\\ub354", "\\uc778\\uc870\\uac00\\uc8fd", "\\ud569\\uc131\\uac00\\uc8fd", "\\uc5d0\\ucf54\\ub808\\ub354"],
+    "leather": ["\\ub808\\ub354", "\\uac00\\uc8fd", "\\uace0\\ud2b8", "\\uc591\\uac00\\uc8fd", "\\uc18c\\uac00\\uc8fd", "\\ub7a8\\uc2a4\\ud0a8", "\\uce74\\uc6b0\\ud558\\uc774\\ub4dc"],
+    "denim": ["\\ub370\\ub2d8", "\\uccad\\ubc14\\uc9c0", "\\uccad\\uc790\\ucf13", "\\ud751\\uccad", "\\uc0dd\\uc9c0", "\\uc9c4\\uccad", "\\uc911\\uccad", "\\uc5f0\\uccad"],
+    "cotton": ["\\ucf54\\ud2bc", "\\uba74", "\\uba74 100", "\\uba74100"],
+    "wool": ["\\uc6b8", "\\uc6b8\\ube14\\ub80c\\ub4dc", "\\uba54\\ub9ac\\ub178", "\\ub2c8\\ud2b8", "\\ubaa8\\uc9c1"],
+    "linen": ["\\ub9b0\\ub128", "\\ub9ac\\ub128"],
+    "fleece": ["\\ud50c\\ub9ac\\uc2a4", "\\ud6c4\\ub9ac\\uc2a4", "\\ubcf4\\uc544"],
+    "corduroy": ["\\ucf54\\ub4c0\\ub85c\\uc774", "\\uace8\\ub374"],
+    "suede": ["\\uc2a4\\uc6e8\\uc774\\ub4dc"],
+    "nylon": ["\\ub098\\uc77c\\ub860"],
+    "polyester": ["\\ud3f4\\ub9ac\\uc5d0\\uc2a4\\ud130", "\\ud3f4\\ub9ac"],
+    "cashmere": ["\\uce90\\uc2dc\\ubbf8\\uc5b4"],
+    "silk": ["\\uc2e4\\ud06c"],
+    "tweed": ["\\ud2b8\\uc704\\ub4dc"],
 }
 
 FIT_KEYWORDS = {
-    "oversized": [
-        "oversized", "over fit", "overfit", "loose fit",
-        "오버핏", "오버사이즈", "루즈핏", "박스핏", "빅실루엣"
-    ],
-    "wide": [
-        "wide", "와이드", "벌룬", "balloon"
-    ],
-    "slim": [
-        "slim", "skinny", "슬림핏", "슬림", "스키니"
-    ],
-    "regular": [
-        "regular", "standard", "basic fit",
-        "레귤러핏", "레귤러", "스탠다드핏", "스탠다드", "기본핏"
-    ],
-    "relaxed": [
-        "relaxed", "comfort", "컴포트핏", "릴렉스핏", "테이퍼드"
-    ],
-    "cropped": [
-        "cropped", "crop", "크롭", "크롭트"
-    ],
+    "oversized": ["oversized", "over fit", "overfit", "loose fit", "\\uc624\\ubc84\\ud54f", "\\uc624\\ubc84\\uc0ac\\uc774\\uc988", "\\ub8e8\\uc988\\ud54f", "\\ubc15\\uc2a4\\ud54f"],
+    "wide": ["wide", "balloon", "\\uc640\\uc774\\ub4dc", "\\ubc8c\\ub8ec"],
+    "slim": ["slim", "skinny", "\\uc2ac\\ub9bc\\ud54f", "\\uc2ac\\ub9bc", "\\uc2a4\\ud0a4\\ub2c8"],
+    "regular": ["regular", "standard", "basic fit", "\\ub808\\uade4\\ub7ec\\ud54f", "\\ub808\\uade4\\ub7ec", "\\uc2a4\\ud0e0\\ub2e4\\ub4dc", "\\uae30\\ubcf8\\ud54f"],
+    "relaxed": ["relaxed", "comfort", "\\ucef4\\ud3ec\\ud2b8\\ud54f", "\\ub9b4\\ub799\\uc2a4\\ud54f"],
+    "cropped": ["cropped", "crop", "\\ud06c\\ub86d", "\\ud06c\\ub86d\\ud54f"],
 }
 
 FIT_PRIORITY_BY_MAIN_CATEGORY = {
-    "하의": ["wide", "slim", "regular", "relaxed", "cropped", "oversized"],
-    "상의": ["oversized", "regular", "slim", "cropped", "relaxed", "wide"],
-    "아우터": ["oversized", "regular", "slim", "cropped", "relaxed", "wide"],
+    "\\ud558\\uc758": ["wide", "slim", "regular", "relaxed", "cropped", "oversized"],
+    "\\uc0c1\\uc758": ["oversized", "regular", "slim", "cropped", "relaxed", "wide"],
+    "\\uc544\\uc6b0\\ud130": ["oversized", "regular", "slim", "cropped", "relaxed", "wide"],
 }
 
 MATERIAL_BY_SUB_CATEGORY = {
-    "데님팬츠": "denim",
-    "니트/스웨터": "wool",
-    "레더자켓": "leather",
-    "코튼 팬츠": "cotton",
+    "\\ub370\\ub2d8\\uc790\\ucf13": "denim",
+    "\\ub2c8\\ud2b8/\\uc2a4\\uc6e8\\ud130": "wool",
+    "\\ub808\\ub354\\uc790\\ucf13": "leather",
+    "\\ucf54\\ud2bc \\uc790\\ucf13": "cotton",
 }
 
 IMAGE_URL_PATTERN = re.compile(r"https?://[^\"'\s<>]+", re.IGNORECASE)
 DIRECT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 COLOR_DB_COLUMN = "dominant_color"
+COLOR_CONFIDENCE_DB_COLUMN = "color_confidence"
+HIGH_COLOR_RATIO = 0.45
+MEDIUM_COLOR_RATIO = 0.30
+MIN_COLOR_PIXEL_COUNT = 80
+IMAGE_REQUEST_TIMEOUT = (5, 10)
+UPDATE_CLEANED_PRODUCT_NAME = os.environ.get("UPDATE_CLEANED_PRODUCT_NAME", "true").strip().lower() in {
+    "1", "true", "yes", "y"
+}
+
+PRODUCT_NAME_NOISE_PATTERNS = [
+    re.compile(r"(?<![a-z0-9])\d+\s*[-_/]?\s*colors?(?![a-z0-9])", re.IGNORECASE),
+    re.compile(r"(?<![a-z0-9])n\s*[-_/]?\s*colors?(?![a-z0-9])", re.IGNORECASE),
+    re.compile(r"\d+\s*[-_/]?\s*\uceec\ub7ec"),
+    re.compile(r"n\s*[-_/]?\s*\uceec\ub7ec", re.IGNORECASE),
+    re.compile(r"\d+\s*[-_/]?\s*\uc885"),
+    re.compile(r"n\s*[-_/]?\s*\uc885", re.IGNORECASE),
+]
+
+WORN_IMAGE_LABELS = [
+    "a person wearing clothes",
+    "a model wearing clothes",
+    "a full body outfit photo",
+    "a person wearing a fashion item",
+]
+PRODUCT_ONLY_IMAGE_LABELS = [
+    "a clothing product photo without a person",
+    "a flat lay clothing product",
+    "a garment on a white background",
+    "a close up product image of clothing",
+]
+WORN_IMAGE_SCORE_THRESHOLD = 0.54
+WORN_IMAGE_MARGIN_THRESHOLD = 0.08
 
 # -------------------------------------------------------------
-# 4. 이미지 전처리
-# -------------------------------------------------------------
+# 4. Image preprocessing helpers
 def crop_center_region(image: Image.Image, width_ratio: float = 0.78, height_ratio: float = 0.90):
     width, height = image.size
     crop_width = max(1, int(width * width_ratio))
@@ -340,37 +303,77 @@ def crop_center_region(image: Image.Image, width_ratio: float = 0.78, height_rat
 
 def prepare_clip_image(image: Image.Image):
     """
-    CLIP이 배경보다 의류에 집중하도록 중앙 영역을 사용한다.
-    정확도를 더 높이려면 segmentation mask로 옷 영역만 crop해서 넣는 것이 가장 좋다.
+    Prepare a center crop for legacy CLIP helpers.
+    Delete-only mode does not call this function.
     """
     return crop_center_region(image.convert("RGB"), width_ratio=0.82, height_ratio=0.92)
 
-# -------------------------------------------------------------
-# 5. CLIP 임베딩
-# -------------------------------------------------------------
-def get_image_embedding(image: Image.Image):
-    clip_image = prepare_clip_image(image)
 
+def ensure_clip_model_loaded():
+    global model, processor
+    if model is not None and processor is not None:
+        return
+
+    print(f"Loading FashionCLIP... model={model_id}, device={device}")
+    processor = CLIPProcessor.from_pretrained(model_id)
+    model = CLIPModel.from_pretrained(model_id).to(device)
+    model.eval()
+
+
+def classify_image_by_prompts(image: Image.Image, labels):
+    ensure_clip_model_loaded()
+    clip_image = prepare_clip_image(image)
     inputs = processor(
-        text=[""],
         images=clip_image,
+        text=labels,
         return_tensors="pt",
-        padding=True
+        padding=True,
     ).to(device)
 
     with torch.no_grad():
         outputs = model(**inputs)
-        image_features = outputs.image_embeds
+        probs = torch.softmax(outputs.logits_per_image[0], dim=0)
+
+    return {label: probs[index].item() for index, label in enumerate(labels)}
+
+
+def detect_worn_image(image: Image.Image):
+    scores = classify_image_by_prompts(image, [*WORN_IMAGE_LABELS, *PRODUCT_ONLY_IMAGE_LABELS])
+    worn_score = max(scores[label] for label in WORN_IMAGE_LABELS)
+    product_score = max(scores[label] for label in PRODUCT_ONLY_IMAGE_LABELS)
+
+    return {
+        "is_worn": (
+            worn_score >= WORN_IMAGE_SCORE_THRESHOLD
+            and (worn_score - product_score) >= WORN_IMAGE_MARGIN_THRESHOLD
+        ),
+        "worn_score": worn_score,
+        "product_score": product_score,
+    }
+
+# -------------------------------------------------------------
+# 5. CLIP embedding helpers
+def get_image_embedding(image: Image.Image):
+    ensure_clip_model_loaded()
+    clip_image = prepare_clip_image(image)
+
+    inputs = processor(
+        images=clip_image,
+        return_tensors="pt"
+    ).to(device)
+
+    with torch.no_grad():
+        image_features = model.get_image_features(**inputs)
         image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
 
     return image_features.squeeze().tolist()
 
 # -------------------------------------------------------------
-# 6. CLIP 프롬프트 생성 및 속성 분류
+# 6. CLIP prompt and attribute classification helpers
 # -------------------------------------------------------------
 def build_attribute_prompts(attribute_name: str, item_name: str):
     labels_map = ATTRIBUTE_LABELS[attribute_name]
-    normalized_name = " ".join((item_name or "clothing item").strip().lower().split())
+    normalized_name = " ".join((clean_product_name_noise(item_name) or "clothing item").strip().lower().split())
 
     prompt_templates = {
         "pattern": [
@@ -406,6 +409,7 @@ def build_attribute_prompts(attribute_name: str, item_name: str):
 
 
 def classify_attribute(image: Image.Image, attribute_name: str, item_name: str):
+    ensure_clip_model_loaded()
     clip_image = prepare_clip_image(image)
     label_keys, prompts = build_attribute_prompts(attribute_name, item_name)
 
@@ -420,7 +424,7 @@ def classify_attribute(image: Image.Image, attribute_name: str, item_name: str):
         outputs = model(**inputs)
         logits = outputs.logits_per_image[0]
 
-    # 같은 label에 대해 여러 prompt를 만들고, logit 평균을 label 점수로 사용한다.
+    # Average multiple prompts into one score per label.
     label_logit_map = {}
     for label_key, logit in zip(label_keys, logits):
         label_logit_map.setdefault(label_key, [])
@@ -451,10 +455,27 @@ def classify_attribute(image: Image.Image, attribute_name: str, item_name: str):
     return best_label
 
 # -------------------------------------------------------------
-# 7. 상품명 기반 색상/소재 추출
+# 7. Product-name matching helpers
 # -------------------------------------------------------------
+def clean_product_name_noise(item_name: str):
+    cleaned = item_name or ""
+    for pattern in PRODUCT_NAME_NOISE_PATTERNS:
+        cleaned = pattern.sub(" ", cleaned)
+
+    cleaned = re.sub(r"\(\s*\)", " ", cleaned)
+    cleaned = re.sub(r"\[\s*\]", " ", cleaned)
+    cleaned = re.sub(r"\{\s*\}", " ", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def should_delete_product_name(item_name: str):
+    name = item_name or ""
+    return any(pattern.search(name) for pattern in PRODUCT_NAME_NOISE_PATTERNS)
+
+
 def normalize_product_name_for_match(item_name: str):
-    lowered = (item_name or "").strip().lower()
+    lowered = clean_product_name_noise(item_name).strip().lower()
     spaced = re.sub(r"[^\w\uac00-\ud7a3]+", " ", lowered)
     spaced = f" {' '.join(spaced.split())} "
     compact = re.sub(r"[^a-z0-9\uac00-\ud7a3]+", "", lowered)
@@ -514,7 +535,7 @@ def classify_material_from_name(item_name: str):
     if not compact_name:
         return None
 
-    # faux leather가 leather보다 먼저 검사되어야 한다.
+    # Match faux leather before broad leather keywords.
     material_priority = [
         "faux_leather", "leather", "denim", "suede", "corduroy", "fleece",
         "cashmere", "wool", "linen", "cotton", "nylon", "polyester", "silk", "tweed",
@@ -542,7 +563,7 @@ def classify_fit_from_name(item_name: str, main_category: str = None):
         for keyword in FIT_KEYWORDS[fit]:
             keyword = keyword.lower()
             if re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", normalized_name):
-                if fit == "wide" and main_category in {"상의", "아우터"}:
+                if fit == "wide" and main_category in {"\uc0c1\uc758", "\uc544\uc6b0\ud130"}:
                     return "oversized"
                 return fit
 
@@ -587,7 +608,7 @@ def extract_first_image_url_from_html(html: str, base_url: str):
 
 def download_product_image(image_or_product_url: str):
     if not image_or_product_url:
-        raise ValueError("image_url이 비어 있습니다.")
+        raise ValueError("image_url is empty.")
 
     headers = {
         "User-Agent": (
@@ -596,7 +617,7 @@ def download_product_image(image_or_product_url: str):
         )
     }
 
-    first_response = requests.get(image_or_product_url, timeout=15, headers=headers)
+    first_response = requests.get(image_or_product_url, timeout=IMAGE_REQUEST_TIMEOUT, headers=headers)
     first_response.raise_for_status()
     content_type = first_response.headers.get("content-type", "").lower()
 
@@ -605,14 +626,14 @@ def download_product_image(image_or_product_url: str):
 
     image_url = extract_first_image_url_from_html(first_response.text, image_or_product_url)
     if not image_url:
-        raise ValueError("상품 페이지에서 대표 이미지 URL을 찾지 못했습니다.")
+        raise ValueError("Could not find an image URL from the product page.")
 
-    image_response = requests.get(image_url, timeout=15, headers=headers)
+    image_response = requests.get(image_url, timeout=IMAGE_REQUEST_TIMEOUT, headers=headers)
     image_response.raise_for_status()
     return Image.open(BytesIO(image_response.content)).convert("RGB")
 
 # -------------------------------------------------------------
-# 8. 색상 추출: fallback 전경 추정 + KMeans + Lab 거리
+# 8. Color extraction helpers
 # -------------------------------------------------------------
 def is_skin_like(red: int, green: int, blue: int):
     return (
@@ -632,8 +653,8 @@ def rgb_to_xyz_component(value: float):
 
 def rgb_to_lab(rgb):
     """
-    skimage 없이 RGB를 CIE Lab으로 변환한다.
-    RGB 유클리드 거리보다 사람이 느끼는 색 차이에 더 가깝다.
+    Convert RGB to CIE Lab without skimage.
+    This is kept for legacy color extraction helpers.
     """
     r, g, b = rgb
     r = rgb_to_xyz_component(float(r))
@@ -775,7 +796,7 @@ def extract_pixels_from_mask(image: Image.Image, mask: Image.Image = None):
         mask_np = np.array(mask)
         pixels = image_np[mask_np > 128]
     else:
-        # segmentation mask가 없을 때 fallback: 중앙 의류 영역을 넓게 사용한다.
+        # Fallback to the central product region when no mask is available.
         h, w, _ = image_np.shape
         top = int(h * 0.08)
         bottom = int(h * 0.92)
@@ -790,15 +811,15 @@ def extract_pixels_from_mask(image: Image.Image, mask: Image.Image = None):
         g = int(g)
         b = int(b)
 
-        # 흰색/밝은 회색 배경 제거
+        # Drop near-white background pixels.
         if r > 242 and g > 242 and b > 242:
             continue
 
-        # 검은 그림자 제거
+        # Drop near-black shadow pixels.
         if r < 12 and g < 12 and b < 12:
             continue
 
-        # 피부색 제거
+        # Drop skin-like pixels from model photos.
         if is_skin_like(r, g, b):
             continue
 
@@ -807,7 +828,165 @@ def extract_pixels_from_mask(image: Image.Image, mask: Image.Image = None):
     return np.array(filtered_pixels, dtype=np.float32)
 
 
+def validate_basic_image_quality(image: Image.Image):
+    width, height = image.size
+    if min(width, height) < 80:
+        return False, "image_too_small"
+
+    resized = image.convert("RGB").resize((96, 96))
+    image_np = np.asarray(resized, dtype=np.float32)
+    brightness = image_np.mean(axis=2)
+    avg_brightness = float(brightness.mean())
+    pixel_std = float(brightness.std())
+
+    if pixel_std < 8:
+        return False, "image_has_too_little_detail"
+    if avg_brightness < 25:
+        return False, "image_too_dark"
+    if avg_brightness > 245:
+        return False, "image_too_bright"
+
+    return True, ""
+
+
+def classify_color_confidence_from_candidates(candidates):
+    if not candidates:
+        return {
+            "color": None,
+            "confidence": "low",
+            "reason": "no_color_candidates",
+            "dominant_ratio": 0.0,
+            "second_ratio": 0.0,
+        }
+
+    total_count = sum(count for count, _ in candidates)
+    if total_count <= 0:
+        return {
+            "color": None,
+            "confidence": "low",
+            "reason": "no_valid_color_pixels",
+            "dominant_ratio": 0.0,
+            "second_ratio": 0.0,
+        }
+
+    valid_candidates = [
+        (count, rgb)
+        for count, rgb in candidates
+        if count / total_count >= 0.08
+    ]
+    if not valid_candidates:
+        return {
+            "color": None,
+            "confidence": "low",
+            "reason": "only_tiny_color_clusters",
+            "dominant_ratio": 0.0,
+            "second_ratio": 0.0,
+        }
+
+    valid_candidates.sort(key=lambda x: x[0], reverse=True)
+    top_count, dominant_rgb = valid_candidates[0]
+    top_ratio = top_count / total_count
+    second_ratio = valid_candidates[1][0] / total_count if len(valid_candidates) > 1 else 0.0
+
+    if is_camouflage_cluster_mix(valid_candidates):
+        return {
+            "color": "camouflage",
+            "confidence": "medium",
+            "reason": "camouflage_cluster_mix",
+            "dominant_ratio": top_ratio,
+            "second_ratio": second_ratio,
+        }
+
+    if second_ratio >= 0.18 and abs(top_ratio - second_ratio) < 0.15:
+        return {
+            "color": "multi_color",
+            "confidence": "low",
+            "reason": "mixed_color_clusters",
+            "dominant_ratio": top_ratio,
+            "second_ratio": second_ratio,
+        }
+
+    color = "indigo" if is_indigo_denim_like_color(dominant_rgb) else classify_color_by_lab(dominant_rgb)
+    if top_ratio >= HIGH_COLOR_RATIO and top_ratio - second_ratio >= 0.18:
+        confidence = "high"
+    elif top_ratio >= MEDIUM_COLOR_RATIO:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {
+        "color": color,
+        "confidence": confidence,
+        "reason": "",
+        "dominant_ratio": top_ratio,
+        "second_ratio": second_ratio,
+    }
+
+
+def extract_dominant_color_result(image: Image.Image, mask: Image.Image = None, n_clusters: int = 5, denim_context: bool = False):
+    ok, quality_reason = validate_basic_image_quality(image)
+    if not ok:
+        return {
+            "color": None,
+            "confidence": "low",
+            "reason": quality_reason,
+            "dominant_ratio": 0.0,
+            "second_ratio": 0.0,
+        }
+
+    pixels = extract_pixels_from_mask(image, mask)
+    if len(pixels) < MIN_COLOR_PIXEL_COUNT:
+        return {
+            "color": None,
+            "confidence": "low",
+            "reason": "not_enough_valid_pixels",
+            "dominant_ratio": 0.0,
+            "second_ratio": 0.0,
+        }
+
+    if denim_context:
+        denim_color = classify_denim_color_from_pixels(pixels)
+        if denim_color:
+            return {
+                "color": denim_color,
+                "confidence": "high",
+                "reason": "denim_context",
+                "dominant_ratio": 1.0,
+                "second_ratio": 0.0,
+            }
+
+    n_clusters = min(n_clusters, len(pixels))
+    kmeans = KMeans(
+        n_clusters=n_clusters,
+        random_state=42,
+        n_init=10
+    )
+    kmeans.fit(pixels)
+
+    labels, counts = np.unique(kmeans.labels_, return_counts=True)
+    total_count = len(kmeans.labels_)
+    candidates = []
+
+    for label, count in zip(labels, counts):
+        center = kmeans.cluster_centers_[label]
+        r, g, b = [int(x) for x in center]
+
+        if r > 240 and g > 240 and b > 240:
+            continue
+
+        candidates.append((int(count), (r, g, b)))
+
+    if not candidates and total_count:
+        dominant_index = labels[np.argmax(counts)]
+        dominant_rgb = tuple(int(x) for x in kmeans.cluster_centers_[dominant_index])
+        candidates = [(int(max(counts)), dominant_rgb)]
+
+    return classify_color_confidence_from_candidates(candidates)
+
+
 def extract_dominant_color(image: Image.Image, mask: Image.Image = None, n_clusters: int = 3, denim_context: bool = False):
+    return extract_dominant_color_result(image, mask, n_clusters, denim_context).get("color")
+
     pixels = extract_pixels_from_mask(image, mask)
 
     if len(pixels) < 20:
@@ -829,7 +1008,7 @@ def extract_dominant_color(image: Image.Image, mask: Image.Image = None, n_clust
 
     labels, counts = np.unique(kmeans.labels_, return_counts=True)
 
-    # 너무 작은 군집은 로고/그림자일 가능성이 있어 제외한다.
+    # Drop tiny clusters that are likely logos or prints.
     min_ratio = 0.12
     valid_candidates = []
     total_count = len(kmeans.labels_)
@@ -842,7 +1021,7 @@ def extract_dominant_color(image: Image.Image, mask: Image.Image = None, n_clust
         if ratio < min_ratio:
             continue
 
-        # 거의 흰 배경성 군집은 제외
+        # Exclude mostly white background clusters.
         if r > 240 and g > 240 and b > 240:
             continue
 
@@ -864,7 +1043,7 @@ def extract_dominant_color(image: Image.Image, mask: Image.Image = None, n_clust
     return classify_color_by_lab(dominant_rgb)
 
 # -------------------------------------------------------------
-# 9. 전체 속성 추출
+# 9. Combined attribute extraction helpers
 # -------------------------------------------------------------
 def extract_fashion_attributes(
     image: Image.Image,
@@ -879,127 +1058,210 @@ def extract_fashion_attributes(
 
     denim_context = is_denim_context(item_name, sub_category, material)
     color = classify_color_from_name(item_name)
-    if color is None:
-        color = extract_dominant_color(image, mask, denim_context=denim_context)
+    if color is not None:
+        color_result = {
+            "color": color,
+            "confidence": "high",
+            "reason": "product_name",
+        }
+    else:
+        color_result = extract_dominant_color_result(image, mask, denim_context=denim_context)
+        color = color_result["color"]
 
     fit = classify_fit_from_name(item_name, main_category)
 
     return {
         "color": color,
+        "color_confidence": color_result["confidence"],
+        "color_reason": color_result.get("reason", ""),
         "fit": fit,
         "material": material,
     }
 
+
+def extract_name_based_attributes(item_name: str):
+    color = classify_color_from_name(item_name)
+    return {
+        "color": color,
+        "color_confidence": "high" if color else "low",
+        "material": classify_material_from_name(item_name),
+    }
+
 # -------------------------------------------------------------
-# 10. Supabase 업데이트
+# 10. Supabase attribute update job
 # -------------------------------------------------------------
-def update_all_embeddings():
-    print("🔍 Supabase에서 데이터를 가져옵니다 (1000개씩 분할 로드)...")
-    print("⚙️ 모든 상품의 embedding과 추출 가능한 속성을 image_url 기준으로 업데이트합니다.")
+def should_update_db_value(current_value, new_value):
+    if is_empty_attribute(new_value):
+        return False
+    return OVERWRITE_ATTRIBUTES or is_empty_attribute(current_value)
+
+
+def build_attribute_update_payload(item, attributes):
+    payload = {}
+
+    if should_update_db_value(item.get(COLOR_DB_COLUMN), attributes.get("color")):
+        payload[COLOR_DB_COLUMN] = attributes["color"]
+        payload[COLOR_CONFIDENCE_DB_COLUMN] = attributes.get("color_confidence") or "low"
+    elif (
+        should_update_db_value(item.get(COLOR_CONFIDENCE_DB_COLUMN), attributes.get("color_confidence"))
+        and not is_empty_attribute(item.get(COLOR_DB_COLUMN))
+    ):
+        payload[COLOR_CONFIDENCE_DB_COLUMN] = attributes["color_confidence"]
+
+    if should_update_db_value(item.get(MATERIAL_DB_COLUMN), attributes.get("material")):
+        payload[MATERIAL_DB_COLUMN] = attributes["material"]
+
+    if should_update_db_value(item.get(FIT_DB_COLUMN), attributes.get("fit")):
+        payload[FIT_DB_COLUMN] = attributes["fit"]
+
+    return payload
+
+
+def write_job_log(file_name: str, rows):
+    if not rows:
+        return
+
+    log_path = os.path.join(BASE_DIR, file_name)
+    with open(log_path, "w", encoding="utf-8") as log_file:
+        for row in rows:
+            log_file.write("\t".join(str(value) for value in row) + "\n")
+    print(f"Log saved: {log_path}")
+
+
+def update_all_attributes():
+    print(f"Running {SCRIPT_VERSION}")
+    print(f"Script path: {os.path.abspath(__file__)}")
+    print(f"Loading rows from Supabase in pages of {PAGE_SIZE}...")
+    print(f"Order column: {ORDER_COLUMN}")
+    print(f"Overwrite existing attributes: {OVERWRITE_ATTRIBUTES}")
+    print(f"Delete option-count rows: {DELETE_OPTION_COUNT_ROWS}")
+    print(f"Dry run: {DRY_RUN}")
 
     all_items = []
-    start = 0
-    limit = 1000
+    last_order_value = None
+    limit = PAGE_SIZE
+    select_columns = [
+        "name",
+        "image_url",
+        "main_category",
+        "sub_category",
+        COLOR_DB_COLUMN,
+        COLOR_CONFIDENCE_DB_COLUMN,
+        MATERIAL_DB_COLUMN,
+        FIT_DB_COLUMN,
+    ]
+    if ORDER_COLUMN not in select_columns:
+        select_columns.append(ORDER_COLUMN)
 
     while True:
-        response = (
+        query = (
             supabase
             .table("clothes")
-            .select("name, image_url, main_category, sub_category")
-            .range(start, start + limit - 1)
-            .execute()
+            .select(", ".join(select_columns))
+            .order(ORDER_COLUMN, desc=False)
+            .limit(limit)
         )
 
+        if last_order_value is not None:
+            query = query.gt(ORDER_COLUMN, last_order_value)
+
+        response = query.execute()
         data = response.data
         if not data:
             break
 
         all_items.extend(data)
-        print(f" 📥 누적 {len(all_items)}개 데이터 로드 완료...")
+        print(f"Loaded rows: {len(all_items)}")
 
         if len(data) < limit:
             break
 
-        start += limit
+        next_order_value = data[-1].get(ORDER_COLUMN)
+        if next_order_value is None or next_order_value == last_order_value:
+            raise RuntimeError(f"Cannot continue pagination with ORDER_COLUMN={ORDER_COLUMN}")
+        last_order_value = next_order_value
 
     if not all_items:
-        print("업데이트할 데이터가 없습니다.")
+        print("No rows to check.")
         return
 
-    print(f"\n🚀 총 {len(all_items)}개의 데이터 업데이트를 시작합니다!\n")
+    print(f"\nStarting fashion attribute update for {len(all_items)} rows.\n")
+
+    failed_items = []
+    deleted_items = []
+    updated_items = []
+    skipped_items = []
 
     for index, item in enumerate(all_items, 1):
-        name = item.get("name") or "이름 없음"
+        name = item.get("name") or "NO_NAME"
         image_url = item.get("image_url")
-        main_category = item.get("main_category")
-        sub_category = item.get("sub_category")
+        raw_name = name
 
         if not image_url:
-            print(f"❌ [{name}] image_url이 없어 건너뜁니다.")
+            failed_items.append((index, raw_name, "image_url missing"))
+            print(f"[{index}/{len(all_items)}] skipped: {raw_name} reason=image_url_missing")
             continue
 
-        print(f"[{index}/{len(all_items)}] 업데이트 중: {name}")
+        if DELETE_OPTION_COUNT_ROWS and should_delete_product_name(raw_name):
+            try:
+                delete_response = None
+                if not DRY_RUN:
+                    delete_response = (
+                        supabase
+                        .table("clothes")
+                        .delete()
+                        .eq("image_url", image_url)
+                        .execute()
+                    )
+                deleted_items.append((index, raw_name, "name_option_count"))
+                deleted_rows = len(delete_response.data or []) if delete_response else 0
+                print(f"[{index}/{len(all_items)}] deleted: {raw_name} reason=name_option_count rows={deleted_rows}")
+            except Exception as e:
+                failed_items.append((index, raw_name, str(e)))
+                print(f"[{index}/{len(all_items)}] delete failed: {raw_name} error={e}")
+            continue
 
         try:
             image = download_product_image(image_url)
-
-            embedding_list = get_image_embedding(image)
             attributes = extract_fashion_attributes(
-                image=image,
-                item_name=name,
-                main_category=main_category,
-                sub_category=sub_category,
-                mask=None
+                image,
+                raw_name,
+                item.get("main_category"),
+                item.get("sub_category"),
             )
+            payload = build_attribute_update_payload(item, attributes)
 
-            update_payload = {
-                "embedding": embedding_list,
-            }
+            if not payload:
+                skipped_items.append((index, raw_name, "attributes already filled"))
+                print(f"[{index}/{len(all_items)}] skipped: {raw_name} attributes={attributes}")
+                continue
 
-            if attributes["color"] is not None:
-                update_payload[COLOR_DB_COLUMN] = attributes["color"]
+            if not DRY_RUN:
+                supabase.table("clothes").update(payload).eq("image_url", image_url).execute()
 
-            if attributes["fit"] is not None:
-                update_payload["fit"] = attributes["fit"]
-
-            if attributes["material"] is not None:
-                update_payload["material"] = attributes["material"]
-
-            update_response = (
-                supabase
-                .table("clothes")
-                .update(update_payload)
-                .eq("image_url", image_url)
-                .execute()
-            )
-
-            verify_response = (
-                supabase
-                .table("clothes")
-                .select(f"{COLOR_DB_COLUMN}, fit, material")
-                .eq("image_url", image_url)
-                .limit(1)
-                .execute()
-            )
-            verified_item = verify_response.data[0] if verify_response.data else {}
-
-            print(
-                "   -> "
-                f"extracted_{COLOR_DB_COLUMN}={update_payload.get(COLOR_DB_COLUMN)}, "
-                f"db_{COLOR_DB_COLUMN}={verified_item.get(COLOR_DB_COLUMN)}, "
-                f"extracted_fit={attributes['fit']}, "
-                f"db_fit={verified_item.get('fit')}, "
-                f"extracted_material={attributes['material']}, "
-                f"db_material={verified_item.get('material')}, "
-                f"returned_rows={len(update_response.data or [])}, "
-                f"verified_rows={len(verify_response.data or [])}"
-            )
-
+            updated_items.append((index, raw_name, payload))
+            print(f"[{index}/{len(all_items)}] updated: {raw_name} payload={payload}")
         except Exception as e:
-            print(f"❌ [{name}] 처리 중 오류 발생: {e}")
+            failed_items.append((index, raw_name, str(e)))
+            print(f"[{index}/{len(all_items)}] failed: {raw_name} error={e}")
 
-    print("\n✅ 임베딩과 속성 메타데이터 업데이트가 모두 완료되었습니다!")
+        if index % 100 == 0:
+            print(f"[{index}/{len(all_items)}] processed rows")
+
+    print("\nFashion attribute update finished.")
+
+
+    print(f"Updated items: {len(updated_items)}")
+    print(f"Skipped items: {len(skipped_items)}")
+    print(f"Deleted items: {len(deleted_items)}")
+    print(f"Failed items: {len(failed_items)}")
+
+    write_job_log("update_attributes.log", updated_items)
+    write_job_log("update_skipped.log", skipped_items)
+    write_job_log("update_deleted.log", deleted_items)
+    write_job_log("update_failed.log", failed_items)
 
 
 if __name__ == "__main__":
-    update_all_embeddings()
+    update_all_attributes()
+
