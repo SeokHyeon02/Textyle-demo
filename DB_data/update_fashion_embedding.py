@@ -10,6 +10,12 @@ from PIL import Image
 from supabase import Client, create_client
 from transformers import CLIPModel, CLIPProcessor
 
+from update import (
+    COLOR_CONFIDENCE_DB_COLUMN,
+    COLOR_DB_COLUMN,
+    classify_color_from_name,
+)
+
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
@@ -24,11 +30,38 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 MODEL_ID = os.environ.get("FASHION_CLIP_MODEL_ID", "patrickjohncyh/fashion-clip")
 TARGET_COLUMN = "fashion_embedding"
-ORDER_COLUMN = "image_url"
+ID_COLUMN = os.environ.get("IMAGE_VIEWER_ID_COLUMN", "id")
+NAME_COLUMN = os.environ.get("IMAGE_VIEWER_NAME_COLUMN", "name")
+IMAGE_COLUMN = os.environ.get("IMAGE_VIEWER_IMAGE_COLUMN", "image_url")
+MAIN_CATEGORY_COLUMN = os.environ.get("IMAGE_VIEWER_MAIN_CATEGORY_COLUMN", "main_category")
+SUB_CATEGORY_COLUMN = os.environ.get("IMAGE_VIEWER_SUB_CATEGORY_COLUMN", "sub_category")
+ORDER_COLUMN = os.environ.get("FASHION_EMBEDDING_ORDER_COLUMN", ID_COLUMN)
 PAGE_SIZE = int(os.environ.get("FASHION_EMBEDDING_PAGE_SIZE", "1000"))
+DRY_RUN = os.environ.get("DRY_RUN", "false").strip().lower() in {
+    "1", "true", "yes", "y"
+}
 
 IMAGE_URL_PATTERN = re.compile(r"https?://[^\"'\s<>]+", re.IGNORECASE)
 DIRECT_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+
+def build_image_request_headers(url: str):
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
+    if "msscdn.net" in (url or ""):
+        headers["Referer"] = "https://www.musinsa.com/"
+
+    return headers
 
 
 def is_direct_image_url(url: str):
@@ -61,12 +94,7 @@ def download_product_image(image_or_product_url: str):
     if not image_or_product_url:
         raise ValueError("image_url is empty")
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        )
-    }
+    headers = build_image_request_headers(image_or_product_url)
 
     first_response = requests.get(image_or_product_url, timeout=15, headers=headers)
     first_response.raise_for_status()
@@ -79,7 +107,7 @@ def download_product_image(image_or_product_url: str):
     if not image_url:
         raise ValueError("Could not find an image URL from the product page")
 
-    image_response = requests.get(image_url, timeout=15, headers=headers)
+    image_response = requests.get(image_url, timeout=15, headers=build_image_request_headers(image_url))
     image_response.raise_for_status()
     return Image.open(BytesIO(image_response.content)).convert("RGB")
 
@@ -137,7 +165,13 @@ def get_fashion_image_embedding(image: Image.Image, model, processor, device):
 def fetch_all_items():
     all_items = []
     last_order_value = None
-    select_columns = ["name", "image_url"]
+    select_columns = [
+        ID_COLUMN,
+        NAME_COLUMN,
+        IMAGE_COLUMN,
+        MAIN_CATEGORY_COLUMN,
+        SUB_CATEGORY_COLUMN,
+    ]
     if ORDER_COLUMN not in select_columns:
         select_columns.append(ORDER_COLUMN)
 
@@ -172,14 +206,44 @@ def fetch_all_items():
     return all_items
 
 
+def extract_color_attributes(_image: Image.Image, item):
+    item_name = item.get(NAME_COLUMN) or ""
+
+    color_from_name = classify_color_from_name(item_name)
+    if color_from_name:
+        return {
+            COLOR_DB_COLUMN: color_from_name,
+            COLOR_CONFIDENCE_DB_COLUMN: "high",
+            "color_reason": "product_name",
+        }
+
+    return {
+        COLOR_DB_COLUMN: None,
+        COLOR_CONFIDENCE_DB_COLUMN: None,
+        "color_reason": "not_found_in_product_name",
+    }
+
+
+def build_update_payload(embedding, color_attributes):
+    payload = {
+        TARGET_COLUMN: embedding,
+        COLOR_DB_COLUMN: color_attributes.get(COLOR_DB_COLUMN),
+        COLOR_CONFIDENCE_DB_COLUMN: color_attributes.get(COLOR_CONFIDENCE_DB_COLUMN),
+    }
+
+    return payload
+
+
 def update_all_fashion_embeddings():
     model, processor, device = load_fashion_clip()
 
     print("Loading all clothes rows from Supabase.")
-    print("Every row will be regenerated, even if fashion_embedding is already filled.")
-    print(f"Target column: {TARGET_COLUMN}")
+    print("Every row will be regenerated, even if embedding or color columns are already filled.")
+    print(f"Embedding column: {TARGET_COLUMN}")
+    print(f"Color columns: {COLOR_DB_COLUMN}, {COLOR_CONFIDENCE_DB_COLUMN}")
     print(f"Order column: {ORDER_COLUMN}")
     print(f"Page size: {PAGE_SIZE}")
+    print(f"Dry run: {DRY_RUN}")
 
     all_items = fetch_all_items()
     if not all_items:
@@ -191,53 +255,70 @@ def update_all_fashion_embeddings():
     failed_items = []
 
     for index, item in enumerate(all_items, 1):
-        name = item.get("name") or "unnamed"
-        image_url = item.get("image_url")
+        row_id = item.get(ID_COLUMN)
+        name = item.get(NAME_COLUMN) or "unnamed"
+        image_url = item.get(IMAGE_COLUMN)
 
         if not image_url:
-            failed_items.append((name, "image_url missing"))
-            print(f"[{index}/{len(all_items)}] skipped: {name} - image_url missing")
+            failed_items.append((row_id, name, "image_url missing"))
+            print(f"[{index}/{len(all_items)}] skipped: id={row_id} {name} - image_url missing")
             continue
 
-        print(f"[{index}/{len(all_items)}] updating: {name}")
+        if row_id is None or row_id == "":
+            failed_items.append((row_id, name, "id missing"))
+            print(f"[{index}/{len(all_items)}] skipped: {name} - id missing")
+            continue
+
+        print(f"[{index}/{len(all_items)}] updating: id={row_id} {name}")
 
         try:
             image = download_product_image(image_url)
             embedding = get_fashion_image_embedding(image, model, processor, device)
+            color_attributes = extract_color_attributes(image, item)
+            payload = build_update_payload(embedding, color_attributes)
 
-            update_response = (
-                supabase
-                .table("clothes")
-                .update({TARGET_COLUMN: embedding})
-                .eq("image_url", image_url)
-                .execute()
-            )
+            update_response = None
+            if not DRY_RUN:
+                update_response = (
+                    supabase
+                    .table("clothes")
+                    .update(payload)
+                    .eq(ID_COLUMN, row_id)
+                    .execute()
+                )
 
             verify_response = (
                 supabase
                 .table("clothes")
-                .select(TARGET_COLUMN)
-                .eq("image_url", image_url)
+                .select(f"{TARGET_COLUMN}, {COLOR_DB_COLUMN}, {COLOR_CONFIDENCE_DB_COLUMN}")
+                .eq(ID_COLUMN, row_id)
                 .limit(1)
                 .execute()
-            )
+            ) if not DRY_RUN else None
 
-            verified_item = verify_response.data[0] if verify_response.data else {}
+            verified_item = verify_response.data[0] if verify_response and verify_response.data else {}
             saved_embedding = verified_item.get(TARGET_COLUMN)
             saved_dim = len(saved_embedding) if isinstance(saved_embedding, list) else None
+            saved_color = verified_item.get(COLOR_DB_COLUMN)
+            saved_color_confidence = verified_item.get(COLOR_CONFIDENCE_DB_COLUMN)
 
             print(
                 "   -> "
                 f"embedding_dim={len(embedding)}, "
+                f"color={payload[COLOR_DB_COLUMN]}, "
+                f"color_confidence={payload[COLOR_CONFIDENCE_DB_COLUMN]}, "
+                f"color_reason={color_attributes.get('color_reason')}, "
                 f"db_embedding_is_null={saved_embedding is None}, "
                 f"db_embedding_dim={saved_dim}, "
-                f"returned_rows={len(update_response.data or [])}, "
-                f"verified_rows={len(verify_response.data or [])}"
+                f"db_color={saved_color}, "
+                f"db_color_confidence={saved_color_confidence}, "
+                f"returned_rows={len(update_response.data or []) if update_response else 0}, "
+                f"verified_rows={len(verify_response.data or []) if verify_response else 0}"
             )
 
         except Exception as exc:
-            failed_items.append((name, str(exc)))
-            print(f"[{index}/{len(all_items)}] failed: {name} - {exc}")
+            failed_items.append((row_id, name, str(exc)))
+            print(f"[{index}/{len(all_items)}] failed: id={row_id} {name} - {exc}")
 
     print("\nFashionCLIP embedding update complete")
     print(f"Failed items: {len(failed_items)}")
@@ -245,8 +326,8 @@ def update_all_fashion_embeddings():
     if failed_items:
         failed_log_path = os.path.join(BASE_DIR, "fashion_embedding_failed.log")
         with open(failed_log_path, "w", encoding="utf-8") as log_file:
-            for name, reason in failed_items:
-                log_file.write(f"{name}\t{reason}\n")
+            for row_id, name, reason in failed_items:
+                log_file.write(f"{row_id}\t{name}\t{reason}\n")
         print(f"Failed item log saved: {failed_log_path}")
 
 

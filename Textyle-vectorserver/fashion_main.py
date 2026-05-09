@@ -54,7 +54,7 @@ class QueryIntent(BaseModel):
     reasoning: str = Field(description="query analysis reasoning")
     color: str = Field(description="target color, empty string if absent")
     color_mode: str = Field(description="target, same, different, or ignore")
-    design: str = Field(description="fit, material, length, or design phrase")
+    design: str = Field(description="style, length, detail, or design phrase")
 
 
 @dataclass
@@ -311,10 +311,9 @@ def color_matches_target(item_color: str, target_color: str, query_attrs=None) -
         return True
 
     query_attrs = query_attrs or {}
-    material = normalize_attribute(query_attrs.get("material"), MATERIAL_ALIASES)
     color_confidence = normalize_text(query_attrs.get("color_confidence"))
     if (
-        material == "denim"
+        query_attrs.get("is_denim_context")
         and color_confidence in {"high", "medium", ""}
         and target_color in DARK_DENIM_COLORS
         and item_color in DARK_DENIM_COLORS
@@ -696,7 +695,7 @@ Extract color_mode, color, and design from the Korean user query.
 color_mode must be one of target, same, different, ignore.
 Use target for an explicit requested color, same for same-color requests,
 different for different-color requests, and ignore when color is irrelevant.
-design should contain fit, material, length, or detail in English. Use "" if absent.
+design should contain style, length, silhouette, fabric words, or detail in English. Use "" if absent.
 Return JSON only.
 """
 
@@ -816,16 +815,13 @@ def build_query_attrs(
 ):
     text_for_attributes = f"{query or ''} {intent.design or ''}"
     material = infer_attribute_from_text(text_for_attributes, MATERIAL_ALIASES)
-    fit = infer_attribute_from_text(text_for_attributes, FIT_ALIASES)
-    if not material and is_denim_query_context(query, main_categories, sub_categories):
-        material = "denim"
+    is_denim_context = material == "denim" or is_denim_query_context(query, main_categories, sub_categories)
     return {
         "main_category": main_categories[0] if main_categories else "",
         "sub_category": sub_categories[0] if sub_categories else "",
         "color": image_color,
         "color_confidence": color_confidence,
-        "material": material,
-        "fit": fit,
+        "is_denim_context": is_denim_context,
     }
 
 
@@ -898,16 +894,12 @@ def rerank_results(results, intent: QueryIntent, query_attrs, limit: int = 10):
     for item in results or []:
         base_similarity = float(item.get("similarity", item.get("score", 0.0)) or 0.0)
         item_color = normalize_color(item.get("dominant_color") or item.get("color"))
-        item_material = normalize_attribute(item.get("material"), MATERIAL_ALIASES)
-        item_fit = normalize_attribute(item.get("fit"), FIT_ALIASES)
 
         if should_exclude_candidate(item, item_color, target_color, color_mode, query_attrs):
             continue
 
         category_bonus = score_exact_or_unknown(item.get("main_category"), query_attrs.get("main_category"), 0.14, -0.18)
         sub_category_bonus = sub_category_score(item.get("sub_category"), query_attrs.get("sub_category"))
-        material_bonus = score_exact_or_unknown(item_material, query_attrs.get("material"), 0.12, -0.04)
-        fit_bonus = score_exact_or_unknown(item_fit, query_attrs.get("fit"), 0.08, -0.02)
 
         color_adjustment = 0.0
         color_matched = color_matches_target(item_color, target_color, query_attrs)
@@ -920,21 +912,15 @@ def rerank_results(results, intent: QueryIntent, query_attrs, limit: int = 10):
         elif color_mode == "ignore" and target_color and color_matched:
             color_adjustment = 0.04
 
-        final_score = base_similarity + category_bonus + sub_category_bonus + material_bonus + fit_bonus + color_adjustment
+        final_score = base_similarity + category_bonus + sub_category_bonus + color_adjustment
         item["_ranking"] = {
             "base_similarity": round(base_similarity, 4),
             "final_score": round(final_score, 4),
             "color_mode": color_mode,
             "target_color": target_color,
             "candidate_color": item_color,
-            "query_material": query_attrs.get("material"),
-            "candidate_material": item_material,
-            "query_fit": query_attrs.get("fit"),
-            "candidate_fit": item_fit,
             "category_bonus": round(category_bonus, 4),
             "sub_category_bonus": round(sub_category_bonus, 4),
-            "material_bonus": round(material_bonus, 4),
-            "fit_bonus": round(fit_bonus, 4),
             "color_adjustment": round(color_adjustment, 4),
         }
         reranked.append((final_score, item))

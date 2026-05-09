@@ -213,6 +213,61 @@ EXTRA_COLOR_KEYWORDS = {
     "camouflage": ["\\uce74\\ubaa8", "\\uce74\\ubaa8\\ud50c\\ub77c\\uc8fc", "\\uc704\\uc7a5", "\\ubc00\\ub9ac\\ud130\\ub9ac"],
 }
 
+BASIC_COLOR_KEYWORDS = {
+    "black": [
+        "black", "blk", "bk", "블랙", "검정", "검정색", "검은색", "까만색", "흑색", "흑청",
+    ],
+    "white": [
+        "white", "wht", "wh", "ivory", "off white", "offwhite",
+        "화이트", "흰색", "하얀색", "백색", "아이보리", "오프 화이트", "오프화이트",
+    ],
+    "gray": [
+        "gray", "grey", "charcoal", "charcole", "melange", "ash gray",
+        "그레이", "회색", "차콜", "챠콜", "멜란지", "애쉬그레이",
+    ],
+    "red": [
+        "red", "burgundy", "wine", "레드", "빨강", "빨간색", "버건디", "와인",
+    ],
+    "orange": [
+        "orange", "오렌지", "주황", "주황색",
+    ],
+    "yellow": [
+        "yellow", "mustard", "옐로우", "노랑", "노란색", "머스타드",
+    ],
+    "green": [
+        "green", "mint", "그린", "초록", "초록색", "녹색", "민트",
+    ],
+    "khaki": [
+        "khaki", "olive", "카키", "올리브",
+    ],
+    "blue": [
+        "blue", "sky blue", "light blue", "sax", "블루", "파랑", "파란색",
+        "소라", "하늘색", "스카이블루", "연청", "중청",
+    ],
+    "navy": [
+        "navy", "nvy", "네이비", "남색",
+    ],
+    "purple": [
+        "purple", "violet", "lavender", "퍼플", "보라", "보라색", "바이올렛", "라벤더",
+    ],
+    "pink": [
+        "pink", "핑크", "분홍", "분홍색",
+    ],
+    "brown": [
+        "brown", "camel", "mocha", "brn", "브라운", "갈색", "카멜", "모카",
+    ],
+    "beige": [
+        "beige", "cream", "sand", "oatmeal", "베이지", "크림", "샌드", "오트밀",
+    ],
+    "indigo": [
+        "indigo", "raw denim", "deep blue denim", "dark indigo",
+        "인디고", "생지", "진청",
+    ],
+    "camouflage": [
+        "camouflage", "camo", "카모", "카모플라주", "위장", "밀리터리",
+    ],
+}
+
 EXTRA_MATERIAL_KEYWORDS = {
     "faux_leather": ["\\ube44\\uac74\\ub808\\ub354", "\\uc778\\uc870\\uac00\\uc8fd", "\\ud569\\uc131\\uac00\\uc8fd", "\\uc5d0\\ucf54\\ub808\\ub354"],
     "leather": ["\\ub808\\ub354", "\\uac00\\uc8fd", "\\uace0\\ud2b8", "\\uc591\\uac00\\uc8fd", "\\uc18c\\uac00\\uc8fd", "\\ub7a8\\uc2a4\\ud0a8", "\\uce74\\uc6b0\\ud558\\uc774\\ub4dc"],
@@ -287,6 +342,26 @@ PRODUCT_ONLY_IMAGE_LABELS = [
 ]
 WORN_IMAGE_SCORE_THRESHOLD = 0.54
 WORN_IMAGE_MARGIN_THRESHOLD = 0.08
+
+
+def build_image_request_headers(url: str):
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+
+    if "msscdn.net" in (url or ""):
+        headers["Referer"] = "https://www.musinsa.com/"
+
+    return headers
+
 
 # -------------------------------------------------------------
 # 4. Image preprocessing helpers
@@ -486,8 +561,18 @@ def merged_keyword_list(base_map, extra_map, key):
     return [*base_map.get(key, []), *extra_map.get(key, [])]
 
 
+def decode_keyword_escapes(keyword: str):
+    if "\\u" not in keyword:
+        return keyword
+
+    try:
+        return keyword.encode("utf-8").decode("unicode_escape")
+    except UnicodeDecodeError:
+        return keyword
+
+
 def keyword_matches_product_name(keyword: str, spaced_name: str, compact_name: str):
-    keyword = (keyword or "").strip().lower()
+    keyword = decode_keyword_escapes(keyword or "").strip().lower()
     if not keyword:
         return False
 
@@ -521,6 +606,11 @@ def classify_color_from_name(item_name: str):
         "camouflage", "indigo", "khaki", "navy", "beige", "gray", "black", "white", "brown", "green",
         "blue", "red", "pink", "purple", "orange", "yellow",
     ]
+
+    for color in color_priority:
+        for keyword in BASIC_COLOR_KEYWORDS.get(color, []):
+            if keyword_matches_product_name(keyword, spaced_name, compact_name):
+                return color
 
     for color in color_priority:
         for keyword in merged_keyword_list(COLOR_KEYWORDS, EXTRA_COLOR_KEYWORDS, color):
@@ -610,12 +700,7 @@ def download_product_image(image_or_product_url: str):
     if not image_or_product_url:
         raise ValueError("image_url is empty.")
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        )
-    }
+    headers = build_image_request_headers(image_or_product_url)
 
     first_response = requests.get(image_or_product_url, timeout=IMAGE_REQUEST_TIMEOUT, headers=headers)
     first_response.raise_for_status()
@@ -628,7 +713,7 @@ def download_product_image(image_or_product_url: str):
     if not image_url:
         raise ValueError("Could not find an image URL from the product page.")
 
-    image_response = requests.get(image_url, timeout=IMAGE_REQUEST_TIMEOUT, headers=headers)
+    image_response = requests.get(image_url, timeout=IMAGE_REQUEST_TIMEOUT, headers=build_image_request_headers(image_url))
     image_response.raise_for_status()
     return Image.open(BytesIO(image_response.content)).convert("RGB")
 

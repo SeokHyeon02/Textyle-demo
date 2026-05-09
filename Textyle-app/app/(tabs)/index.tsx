@@ -10,7 +10,7 @@ export default function SearchScreen() {
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [searchText, setSearchText] = useState('');
-  
+
   const [isLoading, setIsLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<any[]>([]);
 
@@ -47,7 +47,7 @@ export default function SearchScreen() {
       const uploadUri = selectedImage?.uri || imageUri;
       const fileName = selectedImage?.fileName || 'photo.jpg';
       const mimeType = selectedImage?.mimeType || 'image/jpeg';
-      
+
       formData.append('file', {
         uri: uploadUri,
         name: fileName,
@@ -56,7 +56,7 @@ export default function SearchScreen() {
 
       formData.append('query', searchText.trim());
 
-      const SERVER_IP = "192.168.0.7"; // 🚨 본인 IP 확인!
+      const SERVER_IP = "192.168.0.6"; // 🚨 본인 IP 확인!
       const response = await fetch(`http://${SERVER_IP}:8001/search`, {
         method: 'POST',
         body: formData,
@@ -88,7 +88,7 @@ export default function SearchScreen() {
     } else if (!targetUrl.startsWith('http')) {
       targetUrl = 'https://' + targetUrl;
     }
-    
+
     try {
       await Linking.openURL(targetUrl);
     } catch (e) {
@@ -125,13 +125,13 @@ export default function SearchScreen() {
       <SafeAreaView style={styles.safeArea}>
         <ScrollView style={styles.resultContainer}>
           <Text style={styles.searchTitle}>✨ 찰떡같은 옷을 찾았어요!</Text>
-          
+
           {searchResults.map((item, index) => (
             <View key={index} style={styles.resultCard}>
               {/* 🚨 기존 headers 다 빼고, 안전장치 함수만 통과시켰습니다! */}
-              <Image 
-                source={{ uri: getValidImageUrl(item.image_url) }} 
-                style={styles.resultImage} 
+              <Image
+                source={{ uri: getValidImageUrl(item.image_url) }}
+                style={styles.resultImage}
                 resizeMode="cover"
               />
               <View style={styles.resultInfo}>
@@ -139,14 +139,14 @@ export default function SearchScreen() {
                 <Text style={styles.resultCategory}>[{item.main_category} {' > '} {item.sub_category}]</Text>
                 <Text style={styles.resultBrand}>{item.brand_name}</Text>
                 <Text style={styles.resultName} numberOfLines={2}>{item.name}</Text>
-                
+
                 {/* ⭐️ 새로 추가된 부분: 천 단위 콤마 가격 표시 */}
                 <Text style={styles.resultPrice}>
                   {item.price ? `${Number(item.price).toLocaleString()}원` : '가격 정보 없음'}
                 </Text>
-                
+
                 <Text style={styles.resultSimilarity}>일치율: {(item.similarity * 100).toFixed(1)}%</Text>
-                
+
                 {/* 🚨 링크 열기에도 안전장치 함수를 달았습니다! */}
                 <TouchableOpacity onPress={() => openShopLink(item.shop_link)}>
                   <Text style={styles.resultLink}>무신사에서 보기 🔗</Text>
@@ -168,7 +168,7 @@ export default function SearchScreen() {
       <View style={styles.container}>
         <View style={styles.mainContent}>
           <Text style={styles.searchTitle}>무엇을 찾고 계신가요?</Text>
-          
+
           <TextInput
             style={styles.textInput}
             placeholder="예) 이 사진과 색깔이 비슷한 의류를 찾아줘"
@@ -209,7 +209,7 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#fff' },
   container: { flex: 1, paddingHorizontal: 20 },
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  mainContent: { flex: 1, justifyContent: 'center' }, 
+  mainContent: { flex: 1, justifyContent: 'center' },
   title: { fontSize: 24, fontWeight: 'bold', marginBottom: 10, color: '#333' },
   searchTitle: { fontSize: 22, fontWeight: 'bold', marginBottom: 20, color: '#333', textAlign: 'center' },
   subtitle: { fontSize: 16, color: '#666', marginBottom: 30 },
@@ -231,15 +231,15 @@ const styles = StyleSheet.create({
   resultInfo: { flex: 1, justifyContent: 'center' },
   resultCategory: { fontSize: 12, color: '#8B5CF6', fontWeight: 'bold', marginBottom: 4 },
   resultName: { fontSize: 15, fontWeight: '600', color: '#333', marginBottom: 6 },
-  
+
   // ⭐️ 새로 추가된 가격 텍스트 스타일
   resultPrice: { fontSize: 16, fontWeight: 'bold', color: '#333', marginTop: 2, marginBottom: 4 },
-  
+
   resultSimilarity: { fontSize: 13, color: '#10B981', marginBottom: 6, fontWeight: 'bold' },
   resultLink: { fontSize: 14, color: '#3B82F6', textDecorationLine: 'underline' },
   resetButton: { backgroundColor: '#333', height: 50, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 40 },
   resetButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
   resultBrand: {
-  fontSize: 13, color: '#333', fontWeight: '600', marginBottom: 2,
+    fontSize: 13, color: '#333', fontWeight: '600', marginBottom: 2,
   },
 });
