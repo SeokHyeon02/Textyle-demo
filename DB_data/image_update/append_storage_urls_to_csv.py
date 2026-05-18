@@ -6,9 +6,10 @@ from dotenv import load_dotenv
 
 
 BASE_DIR = Path(__file__).resolve().parent
+DB_DATA_DIR = BASE_DIR.parent
 CSV_PATH = BASE_DIR / "selected_shop_links.csv"
 
-load_dotenv(dotenv_path=BASE_DIR / ".env")
+load_dotenv(dotenv_path=DB_DATA_DIR / ".env")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 STORAGE_BASE_URL = os.environ.get("STORAGE_BASE_URL")

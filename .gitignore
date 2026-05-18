@@ -12,5 +12,12 @@ __pycache__/
 node_modules/
 .env
 DB_data/*.csv
+DB_data/image_update/*.csv
 DB_data/image/
 DB_data/image_jpg_700/
+
+# Local agent instructions
+AGENTS.md
+CLAUDE.md
+**/AGENTS.md
+**/CLAUDE.md

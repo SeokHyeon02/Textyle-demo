@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 # 1. 환경 변수 및 Supabase 연결 설정
 # -------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-env_path = os.path.join(BASE_DIR, '.env')
+DB_DATA_DIR = os.path.dirname(BASE_DIR)
+env_path = os.path.join(DB_DATA_DIR, '.env')
 load_dotenv(dotenv_path=env_path)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")

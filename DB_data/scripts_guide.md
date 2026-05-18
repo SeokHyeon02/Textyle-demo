@@ -16,7 +16,7 @@
 ## 1. 🖼️ `view_db_images.py`
 
 📁 파일 위치:
-- [view_db_images.py](./view_db_images.py)
+- [view_db_images.py](./image_update/view_db_images.py)
 
 ### 목적
 
@@ -58,7 +58,7 @@ saved_at,id,shop_link
 
 기본 CSV 경로:
 
-- `./selected_shop_links.csv`
+- `./image_update/selected_shop_links.csv`
 
 ### 주요 환경변수
 
@@ -75,7 +75,7 @@ IMAGE_VIEWER_SHOP_LINK_COLUMN=shop_link
 IMAGE_VIEWER_PAGE_SIZE=50
 IMAGE_VIEWER_HOST=127.0.0.1
 IMAGE_VIEWER_PORT=8765
-IMAGE_VIEWER_CSV_PATH=./selected_shop_links.csv
+IMAGE_VIEWER_CSV_PATH=./image_update/selected_shop_links.csv
 ```
 
 값을 따로 지정하지 않으면 코드의 기본값을 사용한다.
@@ -83,7 +83,7 @@ IMAGE_VIEWER_CSV_PATH=./selected_shop_links.csv
 ### 실행 방법
 
 ```powershell
-python ./view_db_images.py
+python ./image_update/view_db_images.py
 ```
 
 ### 주의점
@@ -97,7 +97,7 @@ python ./view_db_images.py
 ## 2. 🔄 `convert_png_to_jpg.py`
 
 📁 파일 위치:
-- [convert_png_to_jpg.py](./convert_png_to_jpg.py)
+- [convert_png_to_jpg.py](./image_update/convert_png_to_jpg.py)
 
 ### 목적
 
@@ -114,7 +114,7 @@ python ./view_db_images.py
 1. 입력 이미지 폴더
    - `./image`
 2. CSV 파일
-   - `./selected_shop_links.csv`
+   - `./image_update/selected_shop_links.csv`
 
 이 스크립트는 CSV 전체를 읽지만, 실제 대상은 `쉼표가 2개인 줄`만 사용한다.
 
@@ -149,7 +149,7 @@ python ./view_db_images.py
 ### 실행 방법
 
 ```powershell
-python ./convert_png_to_jpg.py
+python ./image_update/convert_png_to_jpg.py
 ```
 
 ### 주의점
@@ -171,7 +171,7 @@ python ./convert_png_to_jpg.py
 ## 3. 🔗 `append_storage_urls_to_csv.py`
 
 📁 파일 위치:
-- [append_storage_urls_to_csv.py](./append_storage_urls_to_csv.py)
+- [append_storage_urls_to_csv.py](./image_update/append_storage_urls_to_csv.py)
 
 ### 목적
 
@@ -232,7 +232,7 @@ STORAGE_BASE_URL=https://luokxiiyouqoybyljooa.supabase.co/storage/v1/object/publ
 ### 실행 방법
 
 ```powershell
-python ./append_storage_urls_to_csv.py
+python ./image_update/append_storage_urls_to_csv.py
 ```
 
 ### 주의점
@@ -285,7 +285,7 @@ saved_at,id,shop_link,storage_url
 ## ▶️ 실행 예시
 
 ```powershell
-python ./view_db_images.py
-python ./convert_png_to_jpg.py
-python ./append_storage_urls_to_csv.py
+python ./image_update/view_db_images.py
+python ./image_update/convert_png_to_jpg.py
+python ./image_update/append_storage_urls_to_csv.py
 ```

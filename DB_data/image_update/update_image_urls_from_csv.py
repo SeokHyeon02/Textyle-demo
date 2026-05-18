@@ -5,6 +5,7 @@ import sys
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_DATA_DIR = os.path.dirname(BASE_DIR)
 TABLE_NAME = os.environ.get("IMAGE_URL_UPDATE_TABLE", "clothes")
 CSV_PATH = os.environ.get(
     "IMAGE_URL_UPDATE_CSV_PATH",
@@ -32,7 +33,7 @@ def get_supabase_client():
     from dotenv import load_dotenv
     from supabase import create_client
 
-    load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
+    load_dotenv(dotenv_path=os.path.join(DB_DATA_DIR, ".env"))
 
     supabase_url = os.environ.get("SUPABASE_URL")
     supabase_key = os.environ.get("SUPABASE_KEY")

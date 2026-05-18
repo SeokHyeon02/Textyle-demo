@@ -1,11 +1,16 @@
 import io
+import importlib
 import json
 import os
 import re
+import tempfile
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import sqrt
 from typing import Optional
+
+import numpy as np
+from fashion_clip.fashion_clip import FashionCLIP
 
 try:
     from google import genai
@@ -22,6 +27,11 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from supabase import Client, create_client
 from transformers import CLIPModel, CLIPProcessor
+from fashion_color_extraction import (
+    extract_dominant_color_result as extract_dominant_color_result_v2,
+    is_denim_context_from_text,
+    should_run_pattern_classifier,
+)
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +42,8 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_MODEL_NAME = os.environ.get("GEMINI_MODEL_NAME", "gemini-2.5-flash")
 FASHION_CLIP_MODEL_ID = os.environ.get("FASHION_CLIP_MODEL_ID", "patrickjohncyh/fashion-clip")
+FASHION_CLIP_API_MODEL_ID = os.environ.get("FASHION_CLIP_API_MODEL_ID", "fashion-clip")
+SEGMENTATION_MODEL_NAME = os.environ.get("SEGMENTATION_MODEL_NAME", "u2net_cloth_seg")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("SUPABASE_URL or SUPABASE_KEY is missing in .env")
@@ -39,11 +51,18 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY and genai else None
+rembg_new_session = None
+rembg_remove = None
+rembg_loaded = False
+segmentation_session = None
+segmentation_failed = False
 
 app = FastAPI(title="TexTyle FashionCLIP Search Server")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Loading FashionCLIP... model={FASHION_CLIP_MODEL_ID}, device={device}")
+fclip = FashionCLIP(FASHION_CLIP_API_MODEL_ID)
+print(f"FashionCLIP API loaded: {FASHION_CLIP_API_MODEL_ID}")
 model = CLIPModel.from_pretrained(FASHION_CLIP_MODEL_ID).to(device)
 processor = CLIPProcessor.from_pretrained(FASHION_CLIP_MODEL_ID)
 model.eval()
@@ -80,6 +99,11 @@ class ColorExtractionResult:
     reason: str = ""
     dominant_ratio: float = 0.0
     second_ratio: float = 0.0
+    candidates: list[dict] = field(default_factory=list)
+    secondary_colors: list[str] = field(default_factory=list)
+    is_mixed_color: bool = False
+    pattern: str = ""
+    search_color_weights: dict[str, float] = field(default_factory=dict)
 
 
 CATEGORY_KEYWORDS = {
@@ -102,6 +126,11 @@ CATEGORY_KEYWORDS = {
     "레더": ("아우터", "레더자켓"),
     "가죽": ("아우터", "레더자켓"),
     "블루종": ("아우터", "블루종/MA-1"),
+    "야상": ("아우터", "사파리/헌팅자켓"),
+    "사파리": ("아우터", "사파리/헌팅자켓"),
+    "헌팅": ("아우터", "사파리/헌팅자켓"),
+    "필드자켓": ("아우터", "사파리/헌팅자켓"),
+    "필드 자켓": ("아우터", "사파리/헌팅자켓"),
     "코트": ("아우터", None),
     "패딩": ("아우터", None),
     "바지": ("하의", None),
@@ -126,6 +155,7 @@ LABEL_TO_EN = {
     "가디건": "cardigan",
     "레더자켓": "leather jacket",
     "블루종/MA-1": "blouson jacket",
+    "사파리/헌팅자켓": "safari hunting jacket",
     "데님팬츠": "denim jeans",
     "슬랙스/정장 팬츠": "slacks trousers",
     "트레이닝/조거 팬츠": "jogger pants",
@@ -174,6 +204,30 @@ FIT_ALIASES = {
     "cropped": {"cropped", "crop", "크롭", "크롭트"},
 }
 
+DESIGN_DETAIL_ALIASES = {
+    "a2": {"a-2", "a2", "에이투", "에이 투"},
+    "rider": {"rider", "riders", "라이더", "라이더스"},
+    "blouson": {"blouson", "블루종", "bomber", "봄버", "ma-1", "ma1", "항공점퍼"},
+    "field": {"field", "필드", "야상", "m65", "m-65"},
+    "safari": {"safari", "hunting", "사파리", "헌팅"},
+    "china_collar": {"china", "차이나", "stand collar", "스탠드카라"},
+    "double": {"double", "더블"},
+    "single": {"single", "싱글"},
+    "hooded": {"hood", "hooded", "후드"},
+    "wide": {"wide", "와이드", "벌룬", "balloon"},
+    "straight": {"straight", "스트레이트", "일자"},
+    "curved": {"curved", "curve", "커브드", "커브"},
+    "cargo": {"cargo", "카고"},
+    "shorts": {"shorts", "short pants", "반바지", "숏팬츠"},
+    "cropped": {"cropped", "crop", "크롭", "크롭트"},
+}
+
+DESIGN_CONFLICT_GROUPS = (
+    {"a2", "rider", "blouson", "field", "safari", "china_collar"},
+    {"wide", "straight", "curved", "cargo", "shorts"},
+    {"single", "double"},
+)
+
 DIFFERENT_COLOR_PATTERNS = ("색상이 다른", "색상 다른", "색이 다른", "다른 색", "색만 다른", "컬러가 다른", "컬러 다른")
 SAME_COLOR_PATTERNS = (
     "같은 색",
@@ -189,7 +243,38 @@ SAME_COLOR_PATTERNS = (
     "유사한 컬러",
     "컬러는 그대로",
 )
-STRICT_SUB_CATEGORIES = {"반소매 티셔츠", "긴소매 티셔츠"}
+DESIGN_SIMILARITY_PATTERNS = (
+    "비슷한 디자인",
+    "유사한 디자인",
+    "디자인 비슷",
+    "디자인이 비슷",
+    "비슷한 핏",
+    "유사한 핏",
+    "핏이 비슷",
+    "비슷한 실루엣",
+    "유사한 실루엣",
+)
+GENERIC_DESIGN_TOKENS_BY_LABEL = {
+    "상의": {"top", "shirt", "clothing"},
+    "하의": {"pants", "trousers", "bottoms", "clothing"},
+    "아우터": {"outerwear", "jacket", "coat", "clothing"},
+    "데님팬츠": {"denim", "jean", "jeans", "pants", "trousers", "denim jeans"},
+    "숏팬츠": {"short", "shorts", "pants"},
+    "레더자켓": {"leather", "jacket", "leather jacket"},
+    "사파리/헌팅자켓": {"field", "safari", "hunting", "jacket", "field jacket", "safari hunting jacket"},
+}
+STRICT_SUB_CATEGORIES = {
+    "반소매 티셔츠",
+    "긴소매 티셔츠",
+    "데님팬츠",
+    "숏팬츠",
+    "레더자켓",
+    "블루종/MA-1",
+    "사파리/헌팅자켓",
+    "카고팬츠",
+    "슬랙스/정장 팬츠",
+    "트레이닝/조거 팬츠",
+}
 
 COLOR_RGB_CENTROIDS = {
     "black": (25, 25, 25),
@@ -253,6 +338,12 @@ MIN_COLOR_PIXEL_COUNT = 80
 HIGH_COLOR_RATIO = 0.45
 MEDIUM_COLOR_RATIO = 0.30
 DARK_DENIM_COLORS = {"black", "indigo", "navy"}
+DENIM_DARK_COLOR_GROUP = {"black", "gray", "indigo", "navy"}
+DENIM_BLUE_COLOR_GROUP = {"blue"}
+DIFFERENT_COLOR_GROUP_LIMIT = 3
+BACKGROUND_COLOR_DISTANCE = 48
+SEGMENTATION_MASK_THRESHOLD = 24
+MIN_SEGMENTED_PIXEL_RATIO = 0.03
 
 
 def normalize_text(value: Optional[str]) -> str:
@@ -302,6 +393,53 @@ def infer_attribute_from_text(text: Optional[str], aliases: dict) -> str:
     return ""
 
 
+def infer_design_details(text: Optional[str]) -> set[str]:
+    normalized = normalize_text(text)
+    compact = re.sub(r"[^a-z0-9가-힣]+", "", normalized)
+    if not compact:
+        return set()
+
+    matched = set()
+    for canonical, alias_set in DESIGN_DETAIL_ALIASES.items():
+        for alias in alias_set | {canonical}:
+            alias_text = alias.lower()
+            alias_compact = re.sub(r"[^a-z0-9가-힣]+", "", alias_text)
+            if alias_text in normalized or (len(alias_compact) >= 2 and alias_compact in compact):
+                matched.add(canonical)
+                break
+    return matched
+
+
+def design_detail_score(item, query_attrs) -> tuple[float, list[str], list[str]]:
+    query_details = set(query_attrs.get("design_details") or [])
+    if not query_details:
+        return 0.0, [], []
+
+    candidate_text = " ".join(
+        str(item.get(field) or "")
+        for field in ("name", "brand_name", "main_category", "sub_category")
+    )
+    candidate_details = infer_design_details(candidate_text)
+    if not candidate_details:
+        return 0.0, [], []
+
+    matched = sorted(query_details & candidate_details)
+    conflicts = []
+    for group in DESIGN_CONFLICT_GROUPS:
+        query_group = query_details & group
+        candidate_group = candidate_details & group
+        if query_group and candidate_group and not (query_group & candidate_group):
+            conflicts.extend(sorted(candidate_group))
+
+    score = 0.0
+    if matched:
+        score += min(0.18, 0.10 + (0.04 * (len(matched) - 1)))
+    if conflicts:
+        score -= min(0.18, 0.10 + (0.04 * (len(set(conflicts)) - 1)))
+
+    return score, matched, sorted(set(conflicts))
+
+
 def color_matches_target(item_color: str, target_color: str, query_attrs=None) -> bool:
     item_color = normalize_color(item_color)
     target_color = normalize_color(target_color)
@@ -323,6 +461,106 @@ def color_matches_target(item_color: str, target_color: str, query_attrs=None) -
     return False
 
 
+def color_group(color: str, query_attrs=None) -> str:
+    normalized_color = normalize_color(color)
+    if not normalized_color:
+        return ""
+
+    query_attrs = query_attrs or {}
+    if query_attrs.get("is_denim_context"):
+        if normalized_color in DENIM_DARK_COLOR_GROUP:
+            return "denim_dark"
+        if normalized_color in DENIM_BLUE_COLOR_GROUP:
+            return "denim_blue"
+        return f"denim_{normalized_color}"
+
+    return normalized_color
+
+
+def color_group_matches_target(item_color: str, target_color: str, query_attrs=None) -> bool:
+    item_group = color_group(item_color, query_attrs)
+    target_group = color_group(target_color, query_attrs)
+    return bool(item_group and target_group and item_group == target_group)
+
+
+def normalize_color_candidates(item) -> list[dict]:
+    raw_candidates = item.get("color_candidates")
+    if isinstance(raw_candidates, str):
+        try:
+            raw_candidates = json.loads(raw_candidates)
+        except json.JSONDecodeError:
+            raw_candidates = []
+    if not isinstance(raw_candidates, list):
+        raw_candidates = []
+
+    normalized_candidates = []
+    seen_colors = set()
+    for candidate in raw_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        color = normalize_color(candidate.get("color"))
+        if not color or color in seen_colors:
+            continue
+        try:
+            score = float(candidate.get("score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        score = min(max(score, 0.0), 1.0)
+        normalized_candidates.append({
+            "color": color,
+            "score": score,
+            "source": normalize_text(candidate.get("source")) or "unknown",
+            "confidence": normalize_text(candidate.get("confidence")) or "medium",
+        })
+        seen_colors.add(color)
+
+    return sorted(normalized_candidates, key=lambda candidate: candidate["score"], reverse=True)[:3]
+
+
+def color_candidate_match_score(color_candidates, target_color: str, query_attrs=None) -> tuple[float, bool, bool]:
+    target_color = normalize_color(target_color)
+    if not target_color:
+        return 0.0, False, False
+
+    best_score = 0.0
+    exact_match = False
+    group_match = False
+    for candidate in color_candidates or []:
+        candidate_color = normalize_color(candidate.get("color"))
+        if not candidate_color:
+            continue
+        candidate_score = float(candidate.get("score", 0.0) or 0.0)
+        if color_matches_target(candidate_color, target_color, query_attrs):
+            best_score = max(best_score, candidate_score)
+            exact_match = True
+        elif color_group_matches_target(candidate_color, target_color, query_attrs):
+            best_score = max(best_score, candidate_score * 0.7)
+            group_match = True
+
+    return best_score, exact_match, group_match
+
+
+def dominant_color_match_score(item_color: str, target_color: str, query_attrs=None) -> tuple[float, bool, bool]:
+    if not item_color or not target_color:
+        return 0.0, False, False
+    if color_matches_target(item_color, target_color, query_attrs):
+        return 0.7, True, False
+    if color_group_matches_target(item_color, target_color, query_attrs):
+        return 0.45, False, True
+    return 0.0, False, False
+
+
+def image_color_confidence_weight(query_attrs) -> float:
+    confidence = normalize_text((query_attrs or {}).get("color_confidence"))
+    if confidence == "high":
+        return 1.0
+    if confidence == "medium":
+        return 0.85
+    if confidence == "low":
+        return 0.55
+    return 1.0
+
+
 def extract_category_from_query(query: str):
     normalized_query = normalize_text(query)
     main_categories = []
@@ -337,9 +575,43 @@ def extract_category_from_query(query: str):
 
 
 def is_denim_query_context(query: str = "", main_categories=None, sub_categories=None) -> bool:
-    labels = " ".join([*(main_categories or []), *(sub_categories or []), query or ""]).lower()
-    denim_terms = ("denim", "jean", "jeans", "데님", "청바지", "흑청", "진청", "중청", "연청")
-    return any(term in labels for term in denim_terms)
+    return is_denim_context_from_text(query, *(main_categories or []), *(sub_categories or []))
+
+
+def is_design_similarity_query(query: str) -> bool:
+    normalized_query = normalize_text(query)
+    return any(pattern in normalized_query for pattern in DESIGN_SIMILARITY_PATTERNS)
+
+
+def sanitize_design_terms(design: str, clothing_label: str, main_categories, sub_categories) -> str:
+    design_text = normalize_text(design)
+    if not design_text:
+        return ""
+
+    generic_tokens = set()
+    labels = [clothing_label, *(main_categories or []), *(sub_categories or [])]
+    for label in labels:
+        generic_tokens.update(GENERIC_DESIGN_TOKENS_BY_LABEL.get(label, set()))
+
+    tokens = [token for token in re.split(r"[\s,/]+", design_text) if token]
+    filtered_tokens = [token for token in tokens if token not in generic_tokens]
+    filtered_design = " ".join(filtered_tokens)
+
+    if filtered_design in generic_tokens:
+        return ""
+    return filtered_design
+
+
+def build_prompt_label(design: str, en_clothing_label: str) -> str:
+    design_tokens = [token for token in re.split(r"[\s,/]+", normalize_text(design)) if token]
+    label_tokens = [token for token in re.split(r"[\s,/]+", normalize_text(en_clothing_label)) if token]
+    label_token_set = set(label_tokens)
+    filtered_design_tokens = [token for token in design_tokens if token not in label_token_set]
+    prompt_tokens = []
+    for token in [*filtered_design_tokens, *label_tokens]:
+        if token not in prompt_tokens:
+            prompt_tokens.append(token)
+    return " ".join(prompt_tokens) if prompt_tokens else "fashion item"
 
 
 def classify_denim_color_from_pixels(pixels) -> str:
@@ -435,12 +707,22 @@ def classify_color_by_lab(rgb_color):
 
 
 def is_skin_like(r: int, g: int, b: int) -> bool:
+    brightness = (r + g + b) / 3
     return (
-        r > 95 and g > 40 and b > 20
+        brightness >= 90
+        and r > 95 and g > 40 and b > 20
         and (max(r, g, b) - min(r, g, b)) > 15
         and abs(r - g) > 15
         and r > g and r > b
     )
+
+
+def is_ignored_color_pixel(r: int, g: int, b: int) -> bool:
+    if r > 242 and g > 242 and b > 242:
+        return True
+    if r < 12 and g < 12 and b < 12:
+        return True
+    return is_skin_like(r, g, b)
 
 
 def iter_image_pixels(image_obj: Image.Image):
@@ -523,26 +805,142 @@ def validate_fashion_image(image_obj: Image.Image) -> FashionImageValidationResu
     return build_fashion_validation_result(labels, scores)
 
 
-def extract_candidate_pixels(image_obj: Image.Image):
+def collect_border_pixels(image_obj: Image.Image, border_ratio: float = 0.08):
+    image = image_obj.convert("RGB").resize((224, 224))
+    width, height = image.size
+    border_x = max(1, int(width * border_ratio))
+    border_y = max(1, int(height * border_ratio))
+    pixels = []
+
+    for y in range(height):
+        for x in range(width):
+            if x >= border_x and x < width - border_x and y >= border_y and y < height - border_y:
+                continue
+            r, g, b = image.getpixel((x, y))
+            if is_ignored_color_pixel(r, g, b):
+                continue
+            pixels.append((r, g, b))
+
+    return pixels
+
+
+def estimate_background_colors(image_obj: Image.Image):
+    border_pixels = collect_border_pixels(image_obj)
+    if len(border_pixels) < MIN_COLOR_PIXEL_COUNT:
+        return []
+    return [candidate["rgb"] for candidate in kmeans_color_candidates(border_pixels, n_clusters=3) if candidate["ratio"] >= 0.12]
+
+
+def is_near_background_color(pixel, background_colors) -> bool:
+    if not background_colors:
+        return False
+    threshold = BACKGROUND_COLOR_DISTANCE ** 2
+    return any(squared_rgb_distance(pixel, background_color) <= threshold for background_color in background_colors)
+
+
+def load_segmentation_backend() -> bool:
+    global rembg_loaded, rembg_new_session, rembg_remove, segmentation_failed
+    if rembg_loaded:
+        return rembg_remove is not None
+    rembg_loaded = True
+
+    try:
+        rembg_module = importlib.import_module("rembg")
+        rembg_new_session = getattr(rembg_module, "new_session", None)
+        rembg_remove = getattr(rembg_module, "remove", None)
+        return rembg_remove is not None
+    except ImportError:
+        segmentation_failed = True
+        print("Segmentation backend unavailable, install rembg to enable it.")
+        return False
+
+
+def get_segmentation_session():
+    global segmentation_session, segmentation_failed
+    if segmentation_failed or not load_segmentation_backend():
+        return None
+    if segmentation_session is not None:
+        return segmentation_session
+
+    try:
+        segmentation_session = rembg_new_session(SEGMENTATION_MODEL_NAME) if rembg_new_session else None
+        return segmentation_session
+    except Exception as exc:
+        segmentation_failed = True
+        print(f"Segmentation session unavailable, fallback color extraction used: {exc}")
+        return None
+
+
+def build_segmentation_mask(image_obj: Image.Image):
+    session = get_segmentation_session()
+    if session is None:
+        return None
+
+    try:
+        mask = rembg_remove(
+            image_obj.convert("RGB"),
+            only_mask=True,
+            session=session,
+        )
+        return mask.convert("L")
+    except Exception as exc:
+        print(f"Segmentation failed, fallback color extraction used: {exc}")
+        return None
+
+
+def extract_segmented_pixels(image_obj: Image.Image):
+    image = image_obj.convert("RGB").resize((224, 224))
+    mask = build_segmentation_mask(image_obj)
+    if mask is None:
+        return []
+
+    mask = mask.resize((224, 224))
+    pixels = []
+    for y in range(224):
+        for x in range(224):
+            if mask.getpixel((x, y)) < SEGMENTATION_MASK_THRESHOLD:
+                continue
+            r, g, b = image.getpixel((x, y))
+            if is_ignored_color_pixel(r, g, b):
+                continue
+            pixels.append((r, g, b))
+
+    min_pixels = int(224 * 224 * MIN_SEGMENTED_PIXEL_RATIO)
+    return pixels if len(pixels) >= max(MIN_COLOR_PIXEL_COUNT, min_pixels) else []
+
+
+def extract_background_filtered_pixels(image_obj: Image.Image):
     width, height = image_obj.size
+    background_colors = estimate_background_colors(image_obj)
     cropped = image_obj.convert("RGB").crop((
-        int(width * 0.2),
-        int(height * 0.15),
-        int(width * 0.8),
-        int(height * 0.85),
+        int(width * 0.12),
+        int(height * 0.08),
+        int(width * 0.88),
+        int(height * 0.92),
     )).resize((224, 224))
 
-    filtered_pixels = []
+    pixels = []
+    fallback_pixels = []
     for r, g, b in iter_image_pixels(cropped):
-        if r > 242 and g > 242 and b > 242:
+        if is_ignored_color_pixel(r, g, b):
             continue
-        if r < 12 and g < 12 and b < 12:
-            continue
-        if is_skin_like(r, g, b):
-            continue
-        filtered_pixels.append((r, g, b))
 
-    return filtered_pixels
+        pixel = (r, g, b)
+        fallback_pixels.append(pixel)
+        if is_near_background_color(pixel, background_colors):
+            continue
+        pixels.append(pixel)
+
+    if len(pixels) >= MIN_COLOR_PIXEL_COUNT:
+        return pixels
+    return fallback_pixels
+
+
+def extract_candidate_pixels(image_obj: Image.Image):
+    segmented_pixels = extract_segmented_pixels(image_obj)
+    if segmented_pixels:
+        return segmented_pixels
+    return extract_background_filtered_pixels(image_obj)
 
 
 def squared_rgb_distance(left, right):
@@ -689,21 +1087,35 @@ async def analyze_query_intent(user_query: str) -> QueryIntent:
     if not gemini_client or genai_types is None:
         return fallback
 
-    system_prompt = """
-You are a fashion search query analyzer.
-Extract color_mode, color, and design from the Korean user query.
-color_mode must be one of target, same, different, ignore.
-Use target for an explicit requested color, same for same-color requests,
-different for different-color requests, and ignore when color is irrelevant.
-design should contain style, length, silhouette, fabric words, or detail in English. Use "" if absent.
-Return JSON only.
+    system_prompt = """\
+You are a fashion search query analyzer for a Korean fashion app.
+The user will provide a Korean query about clothing. Your job is to extract structured intent.
+
+Fields to extract:
+- reasoning: Brief explanation of your analysis (1~2 sentences in English).
+- color: The target color explicitly mentioned (canonical English lowercase, e.g. "black", "navy", "beige"). Use "" if no color is mentioned.
+- color_mode:
+    - "target"    -> user wants items of a specific color (e.g. "검정 후드티 보여줘")
+    - "same"      -> user wants the same color as a reference item (e.g. "같은 색으로 보여줘")
+    - "different" -> user wants a different color (e.g. "색상이 다른 걸로 보여줘")
+    - "ignore"    -> color is not relevant to the query
+- design: Style, silhouette, length, fabric, or fit keywords in English, space-separated (e.g. "oversized wide-leg denim"). Use "" if absent.
+
+Rules:
+- If a color word appears but the user is not requesting that color (e.g. describing a reference), set color_mode to "same" or "ignore" appropriately.
+- Do NOT invent colors not mentioned in the query.
+- Return valid JSON only, no markdown.
+
+Example output:
+{"reasoning": "User wants a black oversized hoodie.", "color": "black", "color_mode": "target", "design": "oversized"}
 """
 
     try:
         response = gemini_client.models.generate_content(
             model=GEMINI_MODEL_NAME,
-            contents=f"{system_prompt}\nUser query: {user_query}",
+            contents=f"User query: {user_query}",
             config=genai_types.GenerateContentConfig(
+                system_instruction=system_prompt,
                 response_mime_type="application/json",
                 response_schema=QueryIntent,
             ),
@@ -757,21 +1169,43 @@ def extract_feature_tensor(model_output):
     raise TypeError(f"Cannot find feature tensor from {type(model_output)}")
 
 
+def l2_normalize_array(embeddings):
+    array = np.asarray(embeddings)
+    if array.ndim == 1:
+        array = array.reshape(1, -1)
+    return array / np.linalg.norm(array, ord=2, axis=-1, keepdims=True)
+
+
+def encode_image_with_fashion_clip_api(image_obj: Image.Image):
+    rgb_image = image_obj.convert("RGB")
+    fd, temp_path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        rgb_image.save(temp_path, format="PNG")
+        images = [temp_path]
+        image_embeddings = fclip.encode_images(images, batch_size=32)
+        image_embeddings = image_embeddings / np.linalg.norm(image_embeddings, ord=2, axis=-1, keepdims=True)
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+    return torch.from_numpy(image_embeddings).to(device)
+
+
+def encode_text_with_fashion_clip_api(text: str):
+    texts = [text]
+    text_embeddings = fclip.encode_text(texts, batch_size=32)
+    text_embeddings = text_embeddings / np.linalg.norm(text_embeddings, ord=2, axis=-1, keepdims=True)
+    return torch.from_numpy(text_embeddings).to(device)
+
+
 def get_image_embedding(image_obj: Image.Image):
-    clip_image = crop_center_region(image_obj.convert("RGB"))
-    inputs = processor(images=clip_image, return_tensors="pt").to(device)
-    with torch.no_grad():
-        image_features = extract_feature_tensor(model.get_image_features(**inputs))
-        image_features = F.normalize(image_features, p=2, dim=-1)
-    return image_features
+    return encode_image_with_fashion_clip_api(image_obj)
 
 
 def get_text_embedding(text: str):
-    inputs = processor(text=[text], return_tensors="pt", padding=True).to(device)
-    with torch.no_grad():
-        text_features = extract_feature_tensor(model.get_text_features(**inputs))
-        text_features = F.normalize(text_features, p=2, dim=-1)
-    return text_features
+    return encode_text_with_fashion_clip_api(text)
 
 
 def attribute_similarity(left: Optional[str], right: Optional[str]) -> float:
@@ -812,6 +1246,11 @@ def build_query_attrs(
     query: str,
     intent: QueryIntent,
     color_confidence: str = "",
+    detected_color: str = "",
+    secondary_colors=None,
+    is_mixed_color: bool = False,
+    pattern: str = "",
+    search_color_weights=None,
 ):
     text_for_attributes = f"{query or ''} {intent.design or ''}"
     material = infer_attribute_from_text(text_for_attributes, MATERIAL_ALIASES)
@@ -820,18 +1259,29 @@ def build_query_attrs(
         "main_category": main_categories[0] if main_categories else "",
         "sub_category": sub_categories[0] if sub_categories else "",
         "color": image_color,
+        "detected_color": detected_color or image_color,
+        "secondary_colors": secondary_colors or [],
+        "is_mixed_color": is_mixed_color,
+        "pattern": pattern,
+        "search_color_weights": search_color_weights or {},
         "color_confidence": color_confidence,
         "is_denim_context": is_denim_context,
+        "design_similarity_mode": is_design_similarity_query(query),
+        "design_details": sorted(infer_design_details(f"{query or ''} {intent.design or ''}")),
     }
 
 
-def build_enhanced_query(en_clothing_label: str, query_image_color: str, intent: QueryIntent):
+def build_enhanced_query(en_clothing_label: str, query_image_color: str, intent: QueryIntent, design_similarity_mode: bool = False):
     has_color_request = bool(intent.color.strip()) if intent.color else False
     has_color_condition = intent.color_mode in {"target", "same", "different"}
     has_design_request = bool(intent.design.strip()) if intent.design else False
     is_specific_query = has_color_request or has_color_condition or has_design_request
 
-    if not is_specific_query:
+    if design_similarity_mode and not has_color_condition:
+        enhanced_query = f"a photo of {en_clothing_label}"
+        text_weight = 0.05
+        image_weight = 0.95
+    elif not is_specific_query:
         enhanced_query = f"a photo of {query_image_color} {en_clothing_label}" if query_image_color else f"a photo of {en_clothing_label}"
         text_weight = 0.10
         image_weight = 0.90
@@ -862,13 +1312,11 @@ def build_enhanced_query(en_clothing_label: str, query_image_color: str, intent:
         "text_weight": text_weight,
         "image_weight": image_weight,
         "is_specific_query": is_specific_query,
+        "design_similarity_mode": design_similarity_mode,
     }
 
 
 def should_exclude_candidate(item, item_color: str, target_color: str, color_mode: str, query_attrs):
-    if color_mode == "different" and target_color and color_matches_target(item_color, target_color, query_attrs):
-        return True
-
     return False
 
 
@@ -889,44 +1337,100 @@ def sub_category_score(item_sub_category, query_sub_category) -> float:
 def rerank_results(results, intent: QueryIntent, query_attrs, limit: int = 10):
     color_mode = intent.color_mode if intent.color_mode in {"target", "same", "different", "ignore"} else "ignore"
     target_color = normalize_color(intent.color) or normalize_color(query_attrs.get("color"))
+    design_similarity_mode = bool(query_attrs.get("design_similarity_mode"))
     reranked = []
 
     for item in results or []:
         base_similarity = float(item.get("similarity", item.get("score", 0.0)) or 0.0)
+        color_candidates = normalize_color_candidates(item)
         item_color = normalize_color(item.get("dominant_color") or item.get("color"))
+        display_color = item_color or (color_candidates[0]["color"] if color_candidates else "")
+        has_color_signal = bool(item_color or color_candidates)
 
         if should_exclude_candidate(item, item_color, target_color, color_mode, query_attrs):
             continue
 
         category_bonus = score_exact_or_unknown(item.get("main_category"), query_attrs.get("main_category"), 0.14, -0.18)
         sub_category_bonus = sub_category_score(item.get("sub_category"), query_attrs.get("sub_category"))
+        design_adjustment, design_matches, design_conflicts = design_detail_score(item, query_attrs)
 
         color_adjustment = 0.0
-        color_matched = color_matches_target(item_color, target_color, query_attrs)
+        candidate_match_score, color_matched, color_group_matched = color_candidate_match_score(
+            color_candidates,
+            target_color,
+            query_attrs,
+        )
+        dominant_match_score, dominant_color_matched, dominant_color_group_matched = dominant_color_match_score(
+            item_color,
+            target_color,
+            query_attrs,
+        )
+        effective_match_score = max(candidate_match_score, dominant_match_score)
+        effective_color_matched = color_matched or dominant_color_matched
+        effective_group_matched = color_group_matched or dominant_color_group_matched
+        if not normalize_color(intent.color):
+            effective_match_score *= image_color_confidence_weight(query_attrs)
+        item_color_group = color_group(display_color, query_attrs)
         if color_mode == "target" and target_color:
-            color_adjustment = 0.20 if color_matched else (-0.12 if item_color else 0.0)
+            color_adjustment = 0.20 * effective_match_score if effective_color_matched or effective_group_matched else (-0.12 if has_color_signal else 0.0)
         elif color_mode == "same" and target_color:
-            color_adjustment = 0.18 if color_matched else (-0.16 if item_color else 0.0)
+            color_adjustment = 0.18 * effective_match_score if effective_color_matched or effective_group_matched else (-0.16 if has_color_signal else 0.0)
         elif color_mode == "different" and target_color:
-            color_adjustment = -0.22 if color_matched else (0.10 if item_color else 0.0)
-        elif color_mode == "ignore" and target_color and color_matched:
-            color_adjustment = 0.04
+            if effective_color_matched or effective_group_matched:
+                color_adjustment = -0.32 * max(effective_match_score, 0.5)
+            else:
+                color_adjustment = 0.22 if has_color_signal else 0.0
+        elif color_mode == "ignore" and target_color and effective_color_matched and not design_similarity_mode:
+            color_adjustment = 0.04 * effective_match_score
 
-        final_score = base_similarity + category_bonus + sub_category_bonus + color_adjustment
+        final_score = base_similarity + category_bonus + sub_category_bonus + color_adjustment + design_adjustment
         item["_ranking"] = {
             "base_similarity": round(base_similarity, 4),
             "final_score": round(final_score, 4),
             "color_mode": color_mode,
             "target_color": target_color,
-            "candidate_color": item_color,
+            "candidate_color": display_color,
+            "candidate_dominant_color": item_color,
+            "candidate_color_candidates": color_candidates,
+            "candidate_color_group": item_color_group,
+            "target_color_group": color_group(target_color, query_attrs),
+            "color_candidate_match_score": round(candidate_match_score, 4),
+            "dominant_color_match_score": round(dominant_match_score, 4),
+            "effective_color_match_score": round(effective_match_score, 4),
+            "color_matched_by_candidates": color_matched,
+            "color_matched_by_dominant": dominant_color_matched,
             "category_bonus": round(category_bonus, 4),
             "sub_category_bonus": round(sub_category_bonus, 4),
             "color_adjustment": round(color_adjustment, 4),
+            "design_adjustment": round(design_adjustment, 4),
+            "design_matches": design_matches,
+            "design_conflicts": design_conflicts,
+            "design_similarity_mode": design_similarity_mode,
         }
         reranked.append((final_score, item))
 
     reranked.sort(key=lambda row: row[0], reverse=True)
-    return [item for _, item in reranked[:limit]]
+    if color_mode != "different" or not target_color:
+        return [item for _, item in reranked[:limit]]
+
+    selected = []
+    skipped = []
+    group_counts = {}
+    for _, item in reranked:
+        item_group = item.get("_ranking", {}).get("candidate_color_group") or "unknown"
+        if item_group != "unknown" and group_counts.get(item_group, 0) >= DIFFERENT_COLOR_GROUP_LIMIT:
+            skipped.append(item)
+            continue
+        selected.append(item)
+        group_counts[item_group] = group_counts.get(item_group, 0) + 1
+        if len(selected) >= limit:
+            return selected
+
+    for item in skipped:
+        selected.append(item)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def log_search_debug(
@@ -939,6 +1443,7 @@ def log_search_debug(
     enhanced_query: str,
     image_weight: float,
     text_weight: float,
+    design_similarity_mode: bool,
     threshold: float,
     rpc_filters,
     raw_result_count: int,
@@ -953,6 +1458,7 @@ def log_search_debug(
     print(f"query_image_color={query_image_color}")
     print(f"color_confidence={color_confidence}")
     print(f"enhanced_query={enhanced_query}")
+    print(f"design_similarity_mode={design_similarity_mode}")
     print(f"image_weight={image_weight}, text_weight={text_weight}, threshold={threshold}")
     print(f"rpc_filters={json.dumps(rpc_filters, ensure_ascii=False)}")
     print(f"raw_result_count={raw_result_count}")
@@ -963,6 +1469,9 @@ def log_search_debug(
             f"name={item.get('name')}, "
             f"similarity={item.get('similarity', item.get('score'))}, "
             f"final_score={ranking.get('final_score')}, "
+            f"design_adjustment={ranking.get('design_adjustment')}, "
+            f"design_matches={ranking.get('design_matches')}, "
+            f"design_conflicts={ranking.get('design_conflicts')}, "
             f"candidate_color={ranking.get('candidate_color')}, "
             f"main_category={item.get('main_category')}, "
             f"sub_category={item.get('sub_category')}"
@@ -993,9 +1502,6 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
             raise HTTPException(status_code=400, detail="\uc758\ub958\uac00 \uba85\ud655\ud788 \ubcf4\uc774\ub294 \uc774\ubbf8\uc9c0\ub97c \uc5c5\ub85c\ub4dc\ud574\uc8fc\uc138\uc694.")
 
         main_categories, sub_categories = extract_category_from_query(query)
-        denim_context = is_denim_query_context(query, main_categories, sub_categories)
-        color_result = extract_dominant_color_result(image_obj, denim_context=denim_context)
-        query_image_color = color_result.color if color_result.confidence in {"high", "medium"} else ""
 
         if sub_categories:
             clothing_label = sub_categories[0]
@@ -1006,11 +1512,32 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
 
         en_clothing_label = LABEL_TO_EN.get(clothing_label, "fashion item")
         intent = await analyze_query_intent(query)
+        intent.design = sanitize_design_terms(intent.design, clothing_label, main_categories, sub_categories)
+        design_similarity_mode = is_design_similarity_query(query)
+        color_mode = intent.color_mode if intent.color_mode in {"target", "same", "different", "ignore"} else "ignore"
+
+        query_image_color = ""
+        color_result = ColorExtractionResult("", "skipped", "color_not_requested")
+        pattern_context_text = f"{query or ''} {intent.design or ''}"
+        should_extract_image_attributes = (
+            color_mode in {"same", "different"}
+            or should_run_pattern_classifier(pattern_context_text)
+        )
+        if should_extract_image_attributes:
+            denim_context = is_denim_query_context(query, main_categories, sub_categories)
+            color_result = extract_dominant_color_result_v2(
+                image_obj,
+                denim_context=denim_context,
+                pattern_context_text=pattern_context_text,
+            )
+            if color_mode in {"same", "different"}:
+                query_image_color = color_result.color if color_result.confidence in {"high", "medium"} else ""
 
         query_build = build_enhanced_query(
             en_clothing_label,
             query_image_color if color_result.confidence in {"high", "medium"} else "",
             intent,
+            design_similarity_mode,
         )
         enhanced_query = query_build["enhanced_query"]
         text_weight = query_build["text_weight"]
@@ -1022,25 +1549,51 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
         query_embedding = F.normalize((image_features * image_weight) + (text_features * text_weight), p=2, dim=-1)
         query_embedding_list = query_embedding.squeeze().tolist()
 
-        threshold = 0.30 if is_specific_query else 0.35
+        threshold = 0.25 if design_similarity_mode else (0.30 if is_specific_query else 0.35)
+        match_count = 200 if color_mode == "different" else 100
         rpc_filters = {
             "filter_main_categories": main_categories if main_categories else None,
-            "filter_sub_categories": None,
+            "filter_sub_categories": sub_categories if sub_categories else None,
         }
         response = supabase.rpc("match_clothes_fashion", {
             "query_embedding": query_embedding_list,
             "match_threshold": threshold,
-            "match_count": 100,
+            "match_count": match_count,
             **rpc_filters,
         }).execute()
+        if design_similarity_mode and not response.data and sub_categories:
+            threshold = 0.20
+            response = supabase.rpc("match_clothes_fashion", {
+                "query_embedding": query_embedding_list,
+                "match_threshold": threshold,
+                "match_count": match_count,
+                **rpc_filters,
+            }).execute()
+        if design_similarity_mode and not response.data and sub_categories and main_categories:
+            rpc_filters = {
+                "filter_main_categories": main_categories,
+                "filter_sub_categories": None,
+            }
+            response = supabase.rpc("match_clothes_fashion", {
+                "query_embedding": query_embedding_list,
+                "match_threshold": threshold,
+                "match_count": match_count,
+                **rpc_filters,
+            }).execute()
 
+        ranking_image_color = color_result.color if color_mode in {"same", "different"} else query_image_color
         query_attrs = build_query_attrs(
             main_categories,
             sub_categories,
-            query_image_color,
+            ranking_image_color,
             query,
             intent,
             color_result.confidence,
+            color_result.color,
+            color_result.secondary_colors,
+            color_result.is_mixed_color,
+            color_result.pattern,
+            color_result.search_color_weights,
         )
         results = rerank_results(response.data, intent, query_attrs, limit=10)
         log_search_debug(
@@ -1053,6 +1606,7 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
             enhanced_query=enhanced_query,
             image_weight=image_weight,
             text_weight=text_weight,
+            design_similarity_mode=design_similarity_mode,
             threshold=threshold,
             rpc_filters=rpc_filters,
             raw_result_count=len(response.data or []),

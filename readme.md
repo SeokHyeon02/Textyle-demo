@@ -52,8 +52,8 @@ Textyle은 사용자가 업로드한 의류 이미지와 한국어 검색 문장
                                     |
 +------------------------------------------------------------------+
 | 🔄 DB_data Scripts                                                |
-| insert_data.py / update.py / update_fashion_embedding.py           |
-| 상품 등록 · 제품명 기반 색상/소재 갱신 · FashionCLIP 임베딩 갱신     |
+| update/insert_data.py / update/update_fashion_colors.py / update/update_fashion_embeddings_only.py |
+| 상품 등록 · 색상 후보 갱신 · FashionCLIP 임베딩 갱신                 |
 +------------------------------------------------------------------+
 ```
 
@@ -77,6 +77,59 @@ Textyle은 사용자가 업로드한 의류 이미지와 한국어 검색 문장
 | 🔄 데이터 갱신 | Python scripts, Supabase Python Client | 상품 등록, 속성 갱신, FashionCLIP 임베딩 갱신 |
 | ✅ 테스트 | Python `unittest` | 쿼리 분석, 필터링, rerank 순수 로직 검증 |
 
+## 🎨 의류 색상 추출 실험
+
+이미지 기반 의류 색상 추출은 `GroundingDINO + SAM` 방식으로 검증 중입니다. 기존 `rembg/u2net_cloth_seg` 방식은 실패로 폐기했고, 현재는 별도 검증 스크립트에서 의류 mask와 색상 후보를 생성한 뒤 CSV 결과를 확인하는 흐름을 사용합니다.
+
+폐기한 방식은 다음과 같습니다.
+
+- 중앙 crop 기반 색상 추출
+- 가장자리 픽셀 기반 배경색 제거
+- `rembg` + `u2net_cloth_seg` 의류 mask
+- mask 내부 k-means 대표색 추출
+- 중앙/하단/목/소매 평균 기반 대표색 보정
+
+실패 원인과 개선 과정은 `COLOR_EXTRACTION_EXPERIMENT_NOTES.md`에 정리되어 있습니다. 핵심은 `rembg/u2net_cloth_seg`가 의류 전체가 아니라 상단, 하단, 허벅지 띠 같은 일부 영역만 segment하는 경우가 많았다는 점입니다.
+
+현재 검증 방향은 다음과 같습니다.
+
+- GroundingDINO로 의류 객체 bbox를 찾습니다.
+- SAM에 bbox prompt를 전달해 여러 mask 후보를 생성합니다.
+- SAM 후보 mask를 색상 힌트, mask 크기, 배경 가능성 기준으로 ranking합니다.
+- mask 내부 픽셀에서 k-means 색상 후보를 만들고, 148개 named color 기준 세부색도 함께 저장합니다.
+- 최종 검색 색상은 `white, black, red, yellow, green, blue, purple, gray, orange, brown, pink` 11개로 정리합니다.
+- 제품명 색상 힌트가 있으면 최종 검색색 결정에 우선 반영합니다.
+- 체크, 스트라이프, 카모 등 패턴은 색상 추출과 분리하고 ViT 패턴 분류 대상으로 표시합니다.
+
+검증 스크립트는 다음 위치에 있습니다.
+
+```text
+DB_data/test/verify_groundingdino_sam_color_extraction.py
+```
+
+실행 전 `SAM_CHECKPOINT`에 로컬 SAM checkpoint 경로를 지정해야 합니다.
+
+```powershell
+cd DB_data/test
+$env:SAM_CHECKPOINT="E:\models\sam_vit_b_01ec64.pth"
+python verify_groundingdino_sam_color_extraction.py --limit 20
+```
+
+검증 결과는 `groundingdino_sam_color_report.csv`와 `groundingdino_sam_debug_sheet.jpg`로 생성됩니다.
+
+Supabase 상품을 현재 방식으로 새로 분석해 색상 컬럼에 반영하는 스크립트도 추가되어 있습니다. 기본 실행은 dry-run입니다.
+
+```powershell
+cd DB_data
+python .\update\update_groundingdino_sam_colors.py --ids 6260 7195 7058 4397
+```
+
+이 스크립트는 Supabase에서 제품명을 읽고 `DB_data/image_jpg_700/<id>.jpg` 이미지를 GroundingDINO + SAM 방식으로 분석합니다. 실제 DB 업데이트는 명시적으로 `--apply`를 붙여 실행합니다.
+
+```powershell
+python .\update\update_groundingdino_sam_colors.py --ids 6260 7195 7058 4397 --apply
+```
+
 ## 🚀 Textyle 프로젝트 실행 방법
 
 ### 1. ⚙️ 사전 준비
@@ -84,9 +137,7 @@ Textyle은 사용자가 업로드한 의류 이미지와 한국어 검색 문장
 - 🔑 `Textyle-vectorserver` 폴더 안에 `.env` 파일을 생성하고 Supabase, Gemini 등 서버에서 사용하는 API 키를 입력합니다.
 - 📱 `Textyle-app` 폴더 안에 환경 변수 파일이 필요한 경우 생성하고 앱에서 사용하는 API 키를 입력합니다.
 - 🌐 `Textyle-app/app/(tabs)/index.tsx` 파일의 `SERVER_IP` 값을 현재 서버를 실행하는 컴퓨터의 IP 주소로 수정합니다.
-- 🔌 같은 파일에서 요청 포트도 사용하는 CLIP 모델에 맞게 수정합니다.
-  - 🧠 기본 CLIP 서버(`main.py`) 사용: `8000`
-  - 👕 FashionCLIP 서버(`fashion_main.py`) 사용: `8001`
+- 🔌 같은 파일에서 요청 포트가 FashionCLIP 서버 포트 `8001`을 바라보도록 맞춥니다.
 
 ### 2. 📱 모바일 앱 실행
 
@@ -97,25 +148,7 @@ cd Textyle-app
 npx expo start
 ```
 
-### 3. 🧠 기본 CLIP 벡터 서버 실행
-
-기존 `main.py` 서버를 사용할 경우 프로젝트 루트 폴더에서 새 터미널을 열고 아래 명령어를 실행합니다.
-
-```powershell
-cd Textyle-vectorserver
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-앱의 요청 주소도 `8000` 포트를 바라보도록 맞춥니다.
-
-```tsx
-const response = await fetch(`http://${SERVER_IP}:8000/search`, {
-  method: 'POST',
-  body: formData,
-});
-```
-
-### 4. 👕 FashionCLIP 벡터 서버 실행
+### 3. 👕 FashionCLIP 벡터 서버 실행
 
 FashionCLIP 기반 검색 서버를 사용할 경우 프로젝트 루트 폴더에서 새 터미널을 열고 아래 명령어를 실행합니다.
 
@@ -134,7 +167,7 @@ const response = await fetch(`http://${SERVER_IP}:8001/search`, {
 });
 ```
 
-### 5. ⚠️ 주의 사항
+### 4. ⚠️ 주의 사항
 
 - 🗄️ `fashion_main.py`는 Supabase RPC 함수 `match_clothes_fashion`과 `fashion_embedding` 컬럼을 사용합니다.
 - 🧾 앱 화면이 계속 로딩 중이면 서버 터미널에서 `/search` 요청 로그가 어디까지 출력되는지 확인합니다.

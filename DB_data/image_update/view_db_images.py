@@ -14,7 +14,8 @@ from supabase import Client, create_client
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
+DB_DATA_DIR = os.path.dirname(BASE_DIR)
+load_dotenv(dotenv_path=os.path.join(DB_DATA_DIR, ".env"))
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")

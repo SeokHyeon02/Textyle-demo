@@ -22,9 +22,8 @@ export default function SearchScreen() {
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [4, 5],
-      quality: 0.8,
+      allowsEditing: false,
+      quality: 1,
       preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Automatic,
     });
     if (!result.canceled) {
