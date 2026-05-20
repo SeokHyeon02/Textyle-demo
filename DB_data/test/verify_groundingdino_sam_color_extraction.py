@@ -24,7 +24,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 DEBUG_CELL_SIZE = (160, 150)
 DEBUG_LABEL_HEIGHT = 80
 MAX_KMEANS_PIXELS = 12000
-VERIFY_WORKFLOW_VERSION = "2026-05-19-logo-excluded-reason-v2"
+VERIFY_WORKFLOW_VERSION = "2026-05-20-named-color-table-v1"
 
 
 COLOR_CENTROIDS = {
@@ -70,7 +70,7 @@ FASHION_TO_FINAL_COLOR = {
     "green": "green",
     "khaki": "green",
     "yellow": "yellow",
-    "beige": "brown",
+    "beige": "white",
     "brown": "brown",
     "pink": "pink",
     "purple": "purple",
@@ -80,14 +80,14 @@ FASHION_TO_FINAL_COLOR = {
 
 COLOR_KEYWORDS = {
     "black": {"black", "blk", "\ube14\ub799", "\uac80\uc815", "\uac80\uc815\uc0c9", "\uae4c\ub9cc", "\ud751\uccad"},
-    "white": {"white", "wht", "ivory", "\ud654\uc774\ud2b8", "\ud770\uc0c9", "\uc544\uc774\ubcf4\ub9ac"},
+    "white": {"white", "wht", "ivory", "cream", "\ud654\uc774\ud2b8", "\ud770\uc0c9", "\uc544\uc774\ubcf4\ub9ac", "\ud06c\ub9bc"},
     "gray": {"gray", "grey", "charcoal", "\uadf8\ub808\uc774", "\ud68c\uc0c9", "\ucc28\ucf5c"},
     "navy": {"navy", "nvy", "\ub124\uc774\ube44", "\ube48\ud2f0\uc9c0\ub124\uc774\ube44", "\ub0a8\uc0c9"},
     "blue": {"blue", "sax", "sky blue", "\ube14\ub8e8", "\ud30c\ub791", "\uc2a4\uce74\uc774\ube14\ub8e8", "\uc911\uccad", "\uc5f0\uccad"},
     "indigo": {"indigo", "raw denim", "dark denim", "dark blue", "\uc778\ub514\uace0", "\uc0dd\uc9c0", "\uc9c4\uccad", "\ub2e4\ud06c\ube14\ub8e8"},
-    "green": {"green", "mint", "teal", "\uadf8\ub9b0", "\ucd08\ub85d", "\uc62c\ub9ac\ube0c\uadf8\ub9b0", "\ubbfc\ud2b8"},
-    "khaki": {"khaki", "olive", "sage", "\uce74\ud0a4", "\uc62c\ub9ac\ube0c", "\uc138\uc774\uc9c0"},
-    "beige": {"beige", "cream", "sand", "oatmeal", "mud beige", "mud.beige", "\ubca0\uc774\uc9c0", "\ud06c\ub9bc", "\uc0cc\ub4dc"},
+    "green": {"green", "mint", "teal", "olive", "sage", "\uadf8\ub9b0", "\ucd08\ub85d", "\uc62c\ub9ac\ube0c\uadf8\ub9b0", "\uc62c\ub9ac\ube0c", "\uc138\uc774\uc9c0", "\ubbfc\ud2b8"},
+    "khaki": {"khaki", "\uce74\ud0a4"},
+    "beige": {"beige", "sand", "oatmeal", "mud beige", "mud.beige", "\ubca0\uc774\uc9c0", "\uc0cc\ub4dc"},
     "brown": {"brown", "camel", "mocha", "mud", "\ube0c\ub77c\uc6b4", "\uac08\uc0c9", "\uce74\uba5c"},
     "red": {"red", "burgundy", "wine", "\ub808\ub4dc", "\ubc84\uac74\ub514", "\uc640\uc778"},
     "pink": {"pink", "\ud551\ud06c", "\ubd84\ud64d"},
@@ -130,6 +130,13 @@ FINAL_COLOR_PRIORITY = (
 
 BLOCKED_COLOR_HINT_TERMS = {
     "blue": {"\ube14\ub8e8\uc885"},
+    "yellow": {
+        "yellowwash",
+        "yellowwashed",
+        "yellowwashing",
+        "\uc610\ub85c\uc6b0\uc6cc\uc2f1",
+        "\ub178\ub791\uc6cc\uc2f1",
+    },
 }
 
 COLOR_FAMILIES = (
@@ -223,6 +230,9 @@ NAMED_COLOR_TO_FASHION_COLOR = {
     "black": "black",
     "dimgray": "gray",
     "darkslategray": "gray",
+    "beige": "white",
+    "antiquewhite": "white",
+    "linen": "white",
     "navy": "blue",
     "midnightblue": "blue",
     "darkblue": "blue",
@@ -243,8 +253,6 @@ NAMED_COLOR_TO_FASHION_COLOR = {
     "bisque": "brown",
     "navajowhite": "brown",
     "blanchedalmond": "brown",
-    "antiquewhite": "brown",
-    "linen": "brown",
     "saddlebrown": "brown",
     "sienna": "brown",
     "chocolate": "brown",
