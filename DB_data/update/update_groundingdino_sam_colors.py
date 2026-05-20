@@ -269,25 +269,19 @@ def flush_update_batch(client, update_batch, args, failed):
     if not update_batch:
         return
 
-    payloads = []
     for row, payload in update_batch:
-        row_id = row.get(args.id_column)
-        batch_payload = {args.id_column: row_id}
-        batch_payload.update(payload)
-        payloads.append(batch_payload)
-
-    try:
-        response = (
-            client
-            .table(args.table)
-            .upsert(payloads, on_conflict=args.id_column)
-            .execute()
-        )
-        print(f"   batch_upsert_rows={len(response.data or [])}")
-    except Exception as exc:
-        for row, _payload in update_batch:
-            failed.append(log_entry_for_row(row, args, f"batch_upsert_failed: {exc}"))
-        print(f"   batch_upsert_failed rows={len(update_batch)} error={exc}")
+        try:
+            response = (
+                client
+                .table(args.table)
+                .update(payload)
+                .eq(args.id_column, row.get(args.id_column))
+                .execute()
+            )
+            print(f"   batch_update_rows={len(response.data or [])}")
+        except Exception as exc:
+            failed.append(log_entry_for_row(row, args, f"batch_update_failed: {exc}"))
+            print(f"   batch_update_failed id={row.get(args.id_column)} error={exc}")
 
 
 def update_groundingdino_sam_colors(args):
