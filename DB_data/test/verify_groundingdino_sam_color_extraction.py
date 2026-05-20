@@ -24,7 +24,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 DEBUG_CELL_SIZE = (160, 150)
 DEBUG_LABEL_HEIGHT = 80
 MAX_KMEANS_PIXELS = 12000
-VERIFY_WORKFLOW_VERSION = "2026-05-20-named-color-table-v1"
+VERIFY_WORKFLOW_VERSION = "2026-05-20-ecru-white-v1"
 
 
 COLOR_CENTROIDS = {
@@ -80,7 +80,7 @@ FASHION_TO_FINAL_COLOR = {
 
 COLOR_KEYWORDS = {
     "black": {"black", "blk", "\ube14\ub799", "\uac80\uc815", "\uac80\uc815\uc0c9", "\uae4c\ub9cc", "\ud751\uccad"},
-    "white": {"white", "wht", "ivory", "cream", "\ud654\uc774\ud2b8", "\ud770\uc0c9", "\uc544\uc774\ubcf4\ub9ac", "\ud06c\ub9bc"},
+    "white": {"white", "wht", "ivory", "cream", "ecru", "\ud654\uc774\ud2b8", "\ud770\uc0c9", "\uc544\uc774\ubcf4\ub9ac", "\ud06c\ub9bc", "\uc5d0\ud06c\ub8e8"},
     "gray": {"gray", "grey", "charcoal", "\uadf8\ub808\uc774", "\ud68c\uc0c9", "\ucc28\ucf5c"},
     "navy": {"navy", "nvy", "\ub124\uc774\ube44", "\ube48\ud2f0\uc9c0\ub124\uc774\ube44", "\ub0a8\uc0c9"},
     "blue": {"blue", "sax", "sky blue", "\ube14\ub8e8", "\ud30c\ub791", "\uc2a4\uce74\uc774\ube14\ub8e8", "\uc911\uccad", "\uc5f0\uccad"},
@@ -596,6 +596,18 @@ def is_warm_neutral_beige_rgb(rgb):
     )
 
 
+def is_light_warm_neutral_white_rgb(rgb):
+    r, g, b = [int(value) for value in rgb]
+    spread = max(r, g, b) - min(r, g, b)
+    return (
+        170 <= brightness(rgb) <= 235
+        and spread <= 48
+        and abs(r - g) <= 24
+        and r >= b + 4
+        and g >= b
+    )
+
+
 def is_dark_navy_rgb(rgb):
     r, g, b = [int(value) for value in rgb]
     return (
@@ -651,6 +663,8 @@ def hinted_chromatic_neutral_color(rgb, color_hint):
         or is_washed_denim_gray_blue_rgb(rgb)
     ):
         return "blue", "hint_blue_neutral"
+    if color_hint == "white" and is_light_warm_neutral_white_rgb(rgb):
+        return "white", "hint_white_warm_neutral"
     if color_hint == "green" and (
         is_olive_leaning_neutral_rgb(rgb)
         or is_muted_green_rgb(rgb)
@@ -697,6 +711,8 @@ def reinterpret_fashion_color(named_color, rgb, default_color, color_hint=""):
         return "blue", "rgb_denim_neutral"
     if is_dark_brown_rgb(rgb):
         return "brown", "rgb_dark_brown_neutral"
+    if is_light_warm_neutral_white_rgb(rgb):
+        return "white", "rgb_warm_light_neutral"
     if is_olive_leaning_neutral_rgb(rgb):
         return "green", "rgb_olive_neutral"
     return default_color, "named_color"
@@ -717,6 +733,8 @@ def nearest_color(rgb):
         return "green"
     if is_dark_brown_rgb(rgb):
         return "brown"
+    if is_light_warm_neutral_white_rgb(rgb):
+        return "white"
     if is_warm_neutral_beige_rgb(rgb):
         return "brown"
     name, group, _named_rgb = nearest_named_color(rgb)
