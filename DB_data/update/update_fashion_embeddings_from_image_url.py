@@ -12,7 +12,7 @@ from fashion_color_utils import IMAGE_COLUMN, NAME_COLUMN, download_product_imag
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_DATA_DIR = os.path.dirname(BASE_DIR)
 DEFAULT_IMAGE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "textyle_fashion_clip_images")
-WORKFLOW_VERSION = "2026-05-20-image-url-fashion-clip-v1"
+WORKFLOW_VERSION = "2026-05-20-sub-category-chunks-v1"
 
 
 def load_environment(env_path):
@@ -44,7 +44,7 @@ def load_fashion_clip(model_id):
 
 def fetch_product_rows(client, args):
     requested_ids = {str(value) for value in args.ids}
-    select_columns = [args.id_column, args.name_column, args.image_url_column]
+    select_columns = [args.id_column, args.name_column, args.image_url_column, args.sub_category_column]
     if args.order_column not in select_columns:
         select_columns.append(args.order_column)
 
@@ -71,6 +71,8 @@ def fetch_product_rows(client, args):
             query = query.in_(args.id_column, list(requested_ids))
         elif args.start_id is not None:
             query = query.gte(args.id_column, args.start_id)
+        if args.sub_category:
+            query = query.in_(args.sub_category_column, args.sub_category)
 
         response = query.execute()
         rows = response.data or []
@@ -196,6 +198,7 @@ def update_fashion_embeddings(args):
     print(f"Image cache dir: {args.image_cache_dir}")
     print(f"Rows selected: {len(product_rows)}")
     print(f"Start id: {args.start_id if args.start_id is not None else '-'}")
+    print(f"Sub category filter: {', '.join(args.sub_category) if args.sub_category else '-'}")
     print(f"Apply: {args.apply}")
     print(f"Download workers: {args.download_workers}")
     print(f"Embedding batch size: {args.embedding_batch_size}")
@@ -299,6 +302,7 @@ def parse_args():
     parser.add_argument("--id-column", default=os.environ.get("IMAGE_VIEWER_ID_COLUMN", "id"))
     parser.add_argument("--name-column", default=os.environ.get("IMAGE_VIEWER_NAME_COLUMN", NAME_COLUMN))
     parser.add_argument("--image-url-column", default=os.environ.get("IMAGE_VIEWER_IMAGE_COLUMN", IMAGE_COLUMN))
+    parser.add_argument("--sub-category-column", default=os.environ.get("IMAGE_VIEWER_SUB_CATEGORY_COLUMN", "sub_category"))
     parser.add_argument("--embedding-column", default="fashion_embedding")
     parser.add_argument("--order-column", default=os.environ.get("FASHION_EMBEDDING_ORDER_COLUMN", "id"))
     parser.add_argument("--page-size", type=int, default=1000)
@@ -310,7 +314,8 @@ def parse_args():
     parser.add_argument("--fashion-clip-model-id", default=os.environ.get("FASHION_CLIP_API_MODEL_ID", "fashion-clip"))
     parser.add_argument("--ids", nargs="*", default=[])
     parser.add_argument("--start-id", type=int, default=None)
-    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--sub-category", nargs="*", default=[])
+    parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument("--apply", action="store_true")
     return parser.parse_args()
 

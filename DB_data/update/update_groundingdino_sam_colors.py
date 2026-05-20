@@ -15,7 +15,7 @@ DB_DATA_DIR = os.path.dirname(BASE_DIR)
 ROOT_DIR = os.path.dirname(DB_DATA_DIR)
 TEST_DIR = os.path.join(DB_DATA_DIR, "test")
 DEFAULT_IMAGE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "textyle_groundingdino_sam_images")
-UPDATE_WORKFLOW_VERSION = "2026-05-19-parallel-download-batch-upsert-v1"
+UPDATE_WORKFLOW_VERSION = "2026-05-20-sub-category-chunks-v1"
 
 VERIFY_MODULE_PATH = os.path.join(TEST_DIR, "verify_groundingdino_sam_color_extraction.py")
 
@@ -134,7 +134,7 @@ def build_payload(result, args):
 
 def fetch_product_rows(client, args):
     requested_ids = {str(value) for value in args.ids}
-    select_columns = [args.id_column, args.name_column, args.image_url_column]
+    select_columns = [args.id_column, args.name_column, args.image_url_column, args.sub_category_column]
     if args.order_column not in select_columns:
         select_columns.append(args.order_column)
 
@@ -161,6 +161,8 @@ def fetch_product_rows(client, args):
             query = query.in_(args.id_column, list(requested_ids))
         elif args.start_id is not None:
             query = query.gte(args.id_column, args.start_id)
+        if args.sub_category:
+            query = query.in_(args.sub_category_column, args.sub_category)
 
         response = query.execute()
         rows = response.data or []
@@ -301,6 +303,7 @@ def update_groundingdino_sam_colors(args):
     print(f"Image cache dir: {args.image_cache_dir}")
     print(f"Rows selected: {len(product_rows)}")
     print(f"Start id: {args.start_id if args.start_id is not None else '-'}")
+    print(f"Sub category filter: {', '.join(args.sub_category) if args.sub_category else '-'}")
     print(f"Apply: {args.apply}")
     print(f"Min confidence: {args.min_confidence}")
     print(f"Download workers: {args.download_workers}")
@@ -388,6 +391,7 @@ def parse_args():
     parser.add_argument("--id-column", default=os.environ.get("IMAGE_VIEWER_ID_COLUMN", "id"))
     parser.add_argument("--name-column", default=os.environ.get("IMAGE_VIEWER_NAME_COLUMN", "name"))
     parser.add_argument("--image-url-column", default=os.environ.get("IMAGE_VIEWER_IMAGE_COLUMN", IMAGE_COLUMN))
+    parser.add_argument("--sub-category-column", default=os.environ.get("IMAGE_VIEWER_SUB_CATEGORY_COLUMN", "sub_category"))
     parser.add_argument("--order-column", default=os.environ.get("FASHION_COLOR_ORDER_COLUMN", "id"))
     parser.add_argument("--page-size", type=int, default=1000)
     parser.add_argument("--image-cache-dir", default=DEFAULT_IMAGE_CACHE_DIR)
@@ -415,7 +419,8 @@ def parse_args():
     parser.add_argument("--min-confidence", choices=["low", "medium", "high"], default="low")
     parser.add_argument("--ids", nargs="*", default=[])
     parser.add_argument("--start-id", type=int, default=None)
-    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--sub-category", nargs="*", default=[])
+    parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument("--preview", type=int, default=5)
     parser.add_argument("--apply", action="store_true")
     return parser.parse_args()
