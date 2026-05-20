@@ -24,6 +24,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 DEBUG_CELL_SIZE = (160, 150)
 DEBUG_LABEL_HEIGHT = 80
 MAX_KMEANS_PIXELS = 12000
+VERIFY_WORKFLOW_VERSION = "2026-05-19-logo-excluded-reason-v2"
 
 
 COLOR_CENTROIDS = {
@@ -272,7 +273,7 @@ PATTERN_KEYWORDS = {
     "camo": {"camo", "camouflage", "\uce74\ubaa8", "\uce74\ubb34\ud50c\ub77c\uc8fc"},
     "herringbone": {"herringbone", "\ud5e4\ub9c1\ubcf8"},
     "checkerboard": {"checkerboard", "\uccb4\ucee4\ubcf4\ub4dc"},
-    "graphic": {"graphic", "logo", "\uadf8\ub798\ud53d", "\ub85c\uace0"},
+    "graphic": {"graphic", "\uadf8\ub798\ud53d"},
 }
 
 
@@ -1319,6 +1320,8 @@ def verify_image(image_path, models, args, product_names):
                 if result.hint_applied:
                     result.color_confidence = "high"
                     result.color_reason = "product_name_priority"
+                else:
+                    result.color_reason = "product_name_image_agree"
             else:
                 result.extracted_color = top["color"]
             result.extracted_named_color = top_named["named_color"] if top_named else ""
