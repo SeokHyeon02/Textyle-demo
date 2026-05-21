@@ -61,9 +61,9 @@ def load_fashion_clip():
 
 def save_temp_rgb_image(image: Image.Image):
     rgb_image = image.convert("RGB")
-    fd, temp_path = tempfile.mkstemp(suffix=".png")
+    fd, temp_path = tempfile.mkstemp(suffix=".jpg")
     os.close(fd)
-    rgb_image.save(temp_path, format="PNG")
+    rgb_image.save(temp_path, format="JPEG", quality=95)
     return temp_path
 
 

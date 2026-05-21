@@ -130,14 +130,20 @@ python .\update\update_groundingdino_sam_colors.py --ids 6260 7195 7058 4397
 python .\update\update_groundingdino_sam_colors.py --ids 6260 7195 7058 4397 --apply
 ```
 
+## 👖 FashionCLIP 데님 검색 실험
+
+데님팬츠 검색은 FashionCLIP 이미지 임베딩만으로는 연청, 중청, 진청, 흑청처럼 색상 톤이 가까운 후보를 안정적으로 구분하기 어려워 별도 실험 흐름으로 관리합니다. 현재 서버는 데님 문맥에서 이미지 색상 후보, named color, 제품명 기반 톤 힌트, Supabase 후보 재정렬 점수를 함께 사용합니다.
+
+상세 실험 내용과 폐기한 보조 스크립트는 `FASHIONCLIP_DENIM_SEARCH_EXPERIMENTS.md`에 정리되어 있습니다. 현재 기준으로 `DB_data/test/check_product_name_color_hint.py`와 `DB_data/update/export_denim_pants_rows.py`는 임시 검증용 스크립트였으므로 저장소에서 제거했습니다.
+
 ## 🚀 Textyle 프로젝트 실행 방법
 
 ### 1. ⚙️ 사전 준비
 
 - 🔑 `Textyle-vectorserver` 폴더 안에 `.env` 파일을 생성하고 Supabase, Gemini 등 서버에서 사용하는 API 키를 입력합니다.
 - 📱 `Textyle-app` 폴더 안에 환경 변수 파일이 필요한 경우 생성하고 앱에서 사용하는 API 키를 입력합니다.
-- 🌐 `Textyle-app/app/(tabs)/index.tsx` 파일의 `SERVER_IP` 값을 현재 서버를 실행하는 컴퓨터의 IP 주소로 수정합니다.
-- 🔌 같은 파일에서 요청 포트가 FashionCLIP 서버 포트 `8001`을 바라보도록 맞춥니다.
+- 🌐 `Textyle-app` 실행 환경에 `EXPO_PUBLIC_FASHION_API_URL`을 설정합니다. 예: `http://192.168.0.6:8001`
+- 🔌 API URL은 FashionCLIP 서버 포트 `8001`을 바라보도록 맞춥니다.
 
 ### 2. 📱 모바일 앱 실행
 
@@ -160,11 +166,9 @@ uvicorn fashion_main:app --host 0.0.0.0 --port 8001 --reload
 
 앱의 요청 주소도 `8001` 포트를 바라보도록 맞춥니다.
 
-```tsx
-const response = await fetch(`http://${SERVER_IP}:8001/search`, {
-  method: 'POST',
-  body: formData,
-});
+```powershell
+$env:EXPO_PUBLIC_FASHION_API_URL="http://192.168.0.6:8001"
+npx expo start
 ```
 
 ### 4. ⚠️ 주의 사항

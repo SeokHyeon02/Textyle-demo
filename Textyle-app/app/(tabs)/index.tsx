@@ -5,6 +5,8 @@ import { ActivityIndicator, Alert, Image, Linking, ScrollView, StyleSheet, Text,
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../supabase';
 
+const FASHION_API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '');
+
 export default function SearchScreen() {
   const [session, setSession] = useState<any>(null);
   const [imageUri, setImageUri] = useState<string | null>(null);
@@ -34,14 +36,18 @@ export default function SearchScreen() {
   };
 
   const searchClothes = async () => {
-    if (!imageUri || !searchText.trim()) {
-      Alert.alert('알림', '사진과 검색어를 모두 입력해주세요!');
+    if (!imageUri) {
+      Alert.alert('알림', '사진을 선택해주세요!');
       return;
     }
 
     setIsLoading(true);
 
     try {
+      if (!FASHION_API_URL) {
+        throw new Error('EXPO_PUBLIC_FASHION_API_URL 환경변수가 설정되지 않았습니다.');
+      }
+
       const formData = new FormData();
       const uploadUri = selectedImage?.uri || imageUri;
       const fileName = selectedImage?.fileName || 'photo.jpg';
@@ -55,8 +61,7 @@ export default function SearchScreen() {
 
       formData.append('query', searchText.trim());
 
-      const SERVER_IP = "192.168.0.6"; // 🚨 본인 IP 확인!
-      const response = await fetch(`http://${SERVER_IP}:8001/search`, {
+      const response = await fetch(`${FASHION_API_URL}/search`, {
         method: 'POST',
         body: formData,
       });
