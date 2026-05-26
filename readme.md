@@ -175,3 +175,50 @@ npx expo start
 
 - 🗄️ `fashion_main.py`는 Supabase RPC 함수 `match_clothes_fashion`과 `fashion_embedding` 컬럼을 사용합니다.
 - 🧾 앱 화면이 계속 로딩 중이면 서버 터미널에서 `/search` 요청 로그가 어디까지 출력되는지 확인합니다.
+
+
+### 추가된 기능
+
+1️⃣ v2 URL 자동 생성
+index.tsx:9:
+
+
+const FASHION_API_V2_URL = FASHION_API_URL?.replace(/:8001(\/|$)/, ':8002$1');
+기존 EXPO_PUBLIC_FASHION_API_URL에서 포트만 8001 → 8002로 치환. 별도 환경변수 설정 불필요.
+
+2️⃣ 버전을 받는 검색 함수
+searchClothes(version: 'v1' | 'v2') 형태로 변경. 두 버전 모두 같은 함수 재사용.
+
+3️⃣ 두 개의 검색 버튼 (검색 화면)
+보라색 버튼: v1 검색 (이미지+텍스트) 🔍 → 포트 8001
+초록색 버튼: v2 검색 (텍스트 하나로 융합 후 검색) 🧪 → 포트 8002
+각자 검색 중일 때만 해당 버튼이 ActivityIndicator 표시.
+
+4️⃣ 결과 화면에 메타 정보 표시
+우측 상단 버전 배지: v1 · 이미지+텍스트 (보라) / v2 · 텍스트 전용 (초록)
+결과 위 메타 박스: 검색 쿼리, 추출된 색상 (v2), 디자인 설명 (v2)
+v1은 enhanced_query/color_extracted/design_description 필드가 없으므로 자동으로 안 나옴(옵셔널 체이닝). v2 응답에서는 모두 표시됨.
+
+5️⃣ 다른 옷 검색하기 버튼
+이제 searchResults + resultVersion + resultMeta 모두 초기화.
+
+사용 방법
+1. 두 서버 동시 기동 (별도 터미널)
+
+# 터미널 1: v1
+cd Textyle-vectorserver
+python -m uvicorn fashion_main:app --host 0.0.0.0 --port 8001 --reload
+
+# 터미널 2: v2
+cd Textyle-vectorserver
+python -m uvicorn fashion_main_v2:app --host 0.0.0.0 --port 8002 --reload
+2. Expo 앱 환경변수 확인
+Textyle-app/.env 또는 EXPO_PUBLIC_FASHION_API_URL에 반드시 :8001을 포함해야 v2 URL이 자동 도출됩니다:
+
+
+EXPO_PUBLIC_FASHION_API_URL=http://{IP주소}:8001
+3. 앱 실행 후
+레퍼런스 사진 첨부
+"변경 요구사항 텍스트" 입력
+v1 버튼 눌러서 결과 확인 → 다른 옷 검색하기
+v2 버튼 눌러서 같은 입력으로 결과 비교

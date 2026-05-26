@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../supabase';
 
 const FASHION_API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '');
+const FASHION_API_V2_URL = FASHION_API_URL?.replace(/:8001(\/|$)/, ':8002$1');
 
 export default function SearchScreen() {
   const [session, setSession] = useState<any>(null);
@@ -14,7 +15,10 @@ export default function SearchScreen() {
   const [searchText, setSearchText] = useState('');
 
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingVersion, setLoadingVersion] = useState<'v1' | 'v2' | null>(null);
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [resultVersion, setResultVersion] = useState<'v1' | 'v2' | null>(null);
+  const [resultMeta, setResultMeta] = useState<any>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -35,19 +39,27 @@ export default function SearchScreen() {
     }
   };
 
-  const searchClothes = async () => {
+  const searchClothes = async (version: 'v1' | 'v2' = 'v1') => {
     if (!imageUri) {
       Alert.alert('알림', '사진을 선택해주세요!');
       return;
     }
 
+    const baseUrl = version === 'v2' ? FASHION_API_V2_URL : FASHION_API_URL;
+    if (!baseUrl) {
+      Alert.alert(
+        '설정 오류',
+        version === 'v2'
+          ? 'v2 서버 URL을 만들 수 없습니다. EXPO_PUBLIC_FASHION_API_URL이 :8001 포트를 포함하는지 확인해주세요.'
+          : 'EXPO_PUBLIC_FASHION_API_URL 환경변수가 설정되지 않았습니다.',
+      );
+      return;
+    }
+
     setIsLoading(true);
+    setLoadingVersion(version);
 
     try {
-      if (!FASHION_API_URL) {
-        throw new Error('EXPO_PUBLIC_FASHION_API_URL 환경변수가 설정되지 않았습니다.');
-      }
-
       const formData = new FormData();
       const uploadUri = selectedImage?.uri || imageUri;
       const fileName = selectedImage?.fileName || 'photo.jpg';
@@ -61,7 +73,7 @@ export default function SearchScreen() {
 
       formData.append('query', searchText.trim());
 
-      const response = await fetch(`${FASHION_API_URL}/search`, {
+      const response = await fetch(`${baseUrl}/search`, {
         method: 'POST',
         body: formData,
       });
@@ -71,11 +83,19 @@ export default function SearchScreen() {
       }
       const data = await response.json();
       setSearchResults(data.results);
+      setResultVersion(version);
+      setResultMeta({
+        enhanced_query: data.enhanced_query,
+        design_description: data.design_description,
+        color_extracted: data.color_extracted,
+        intent: data.intent,
+      });
     } catch (error) {
       console.error("검색 에러:", error);
       Alert.alert('통신 에러', '서버에 연결할 수 없습니다. 파이썬 서버가 켜져 있는지, IP 주소가 맞는지 확인해주세요.');
     } finally {
       setIsLoading(false);
+      setLoadingVersion(null);
     }
   };
 
@@ -128,7 +148,38 @@ export default function SearchScreen() {
     return (
       <SafeAreaView style={styles.safeArea}>
         <ScrollView style={styles.resultContainer}>
-          <Text style={styles.searchTitle}>✨ 찰떡같은 옷을 찾았어요!</Text>
+          <View style={styles.resultHeader}>
+            <Text style={styles.searchTitle}>✨ 찰떡같은 옷을 찾았어요!</Text>
+            {resultVersion && (
+              <View style={[styles.versionBadge, resultVersion === 'v2' ? styles.versionBadgeV2 : styles.versionBadgeV1]}>
+                <Text style={styles.versionBadgeText}>
+                  {resultVersion === 'v2' ? 'v2 · 텍스트 전용' : 'v1 · 이미지+텍스트'}
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {resultMeta?.enhanced_query && (
+            <View style={styles.metaBox}>
+              <Text style={styles.metaLabel}>검색 쿼리</Text>
+              <Text style={styles.metaValue}>{resultMeta.enhanced_query}</Text>
+              {resultMeta.color_extracted?.color && (
+                <>
+                  <Text style={styles.metaLabel}>추출된 색상</Text>
+                  <Text style={styles.metaValue}>
+                    {resultMeta.color_extracted.color} ({resultMeta.color_extracted.confidence})
+                    {resultMeta.color_extracted.pattern ? ` · ${resultMeta.color_extracted.pattern}` : ''}
+                  </Text>
+                </>
+              )}
+              {resultMeta.design_description && (
+                <>
+                  <Text style={styles.metaLabel}>디자인 설명</Text>
+                  <Text style={styles.metaValue}>{resultMeta.design_description}</Text>
+                </>
+              )}
+            </View>
+          )}
 
           {searchResults.map((item, index) => (
             <View key={index} style={styles.resultCard}>
@@ -159,7 +210,14 @@ export default function SearchScreen() {
             </View>
           ))}
 
-          <TouchableOpacity style={styles.resetButton} onPress={() => setSearchResults([])}>
+          <TouchableOpacity
+            style={styles.resetButton}
+            onPress={() => {
+              setSearchResults([]);
+              setResultVersion(null);
+              setResultMeta(null);
+            }}
+          >
             <Text style={styles.resetButtonText}>다른 옷 검색하기</Text>
           </TouchableOpacity>
         </ScrollView>
@@ -191,11 +249,27 @@ export default function SearchScreen() {
             )}
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.searchButton} onPress={searchClothes} disabled={isLoading}>
-            {isLoading ? (
+          <TouchableOpacity
+            style={[styles.searchButton, isLoading && styles.searchButtonDisabled]}
+            onPress={() => searchClothes('v1')}
+            disabled={isLoading}
+          >
+            {isLoading && loadingVersion === 'v1' ? (
               <ActivityIndicator color="#fff" />
             ) : (
-              <Text style={styles.searchButtonText}>비슷한 옷 찾기 🔍</Text>
+              <Text style={styles.searchButtonText}>v1 검색 (이미지+텍스트) 🔍</Text>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.searchButtonV2, isLoading && styles.searchButtonDisabled]}
+            onPress={() => searchClothes('v2')}
+            disabled={isLoading}
+          >
+            {isLoading && loadingVersion === 'v2' ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.searchButtonText}>v2 검색 (텍스트 전용) 🧪</Text>
             )}
           </TouchableOpacity>
         </View>
@@ -226,7 +300,17 @@ const styles = StyleSheet.create({
   placeholderText: { color: '#888', fontSize: 16 },
   image: { width: '100%', height: '100%' },
   searchButton: { backgroundColor: '#8B5CF6', height: 55, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+  searchButtonV2: { backgroundColor: '#10B981', height: 55, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginTop: 10 },
+  searchButtonDisabled: { opacity: 0.6 },
   searchButtonText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  resultHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  versionBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
+  versionBadgeV1: { backgroundColor: '#8B5CF6' },
+  versionBadgeV2: { backgroundColor: '#10B981' },
+  versionBadgeText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  metaBox: { backgroundColor: '#F9FAFB', borderRadius: 10, padding: 12, marginBottom: 15, borderWidth: 1, borderColor: '#E5E7EB' },
+  metaLabel: { fontSize: 11, color: '#6B7280', fontWeight: 'bold', marginTop: 4, textTransform: 'uppercase' },
+  metaValue: { fontSize: 13, color: '#374151', marginTop: 2 },
   adBanner: { height: 60, backgroundColor: '#F3F4F6', justifyContent: 'center', alignItems: 'center', borderRadius: 8, marginBottom: 10 },
   adText: { color: '#9CA3AF', fontSize: 14 },
   resultContainer: { flex: 1, padding: 20 },
