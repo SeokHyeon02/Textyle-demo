@@ -1648,6 +1648,179 @@ def extract_query_color_result(image_obj: Image.Image, denim_context: bool, patt
     return fallback
 
 
+# Maps awkward CSS named colors (returned by PIL palette nearest-neighbour) to
+# fashion-friendly terms that FashionCLIP understands well. CSS names not in
+# this map are kept verbatim (e.g. "navy", "khaki", "olive", "indigo" pass
+# through unchanged).
+DETAILED_COLOR_ALIASES = {
+    "midnightblue": "navy",
+    "darkblue": "navy",
+    "mediumblue": "blue",
+    "royalblue": "royal blue",
+    "dodgerblue": "blue",
+    "cornflowerblue": "blue",
+    "steelblue": "slate blue",
+    "lightsteelblue": "light blue",
+    "powderblue": "light blue",
+    "skyblue": "sky blue",
+    "lightskyblue": "sky blue",
+    "deepskyblue": "sky blue",
+    "lightblue": "light blue",
+    "aliceblue": "white",
+    "ghostwhite": "white",
+    "whitesmoke": "white",
+    "snow": "white",
+    "ivory": "ivory",
+    "antiquewhite": "ivory",
+    "floralwhite": "ivory",
+    "oldlace": "ivory",
+    "linen": "ivory",
+    "beige": "beige",
+    "mistyrose": "white",
+    "darkslategray": "charcoal",
+    "darkslategrey": "charcoal",
+    "dimgray": "charcoal",
+    "dimgrey": "charcoal",
+    "slategray": "slate gray",
+    "slategrey": "slate gray",
+    "lightslategray": "slate gray",
+    "lightslategrey": "slate gray",
+    "gainsboro": "light gray",
+    "lightgray": "light gray",
+    "lightgrey": "light gray",
+    "silver": "silver",
+    "darkgray": "dark gray",
+    "darkgrey": "dark gray",
+    "salmon": "salmon",
+    "lightsalmon": "salmon",
+    "darksalmon": "salmon",
+    "lightcoral": "coral",
+    "indianred": "red",
+    "crimson": "crimson",
+    "firebrick": "burgundy",
+    "darkred": "burgundy",
+    "maroon": "burgundy",
+    "hotpink": "pink",
+    "deeppink": "pink",
+    "lightpink": "light pink",
+    "palevioletred": "pink",
+    "mediumvioletred": "pink",
+    "darkorange": "orange",
+    "orangered": "orange",
+    "tomato": "tomato red",
+    "coral": "coral",
+    "gold": "mustard",
+    "darkgoldenrod": "mustard",
+    "goldenrod": "mustard",
+    "khaki": "khaki",
+    "darkkhaki": "khaki",
+    "palegoldenrod": "pale yellow",
+    "lightyellow": "pale yellow",
+    "lemonchiffon": "pale yellow",
+    "papayawhip": "cream",
+    "moccasin": "cream",
+    "peachpuff": "peach",
+    "navajowhite": "cream",
+    "blanchedalmond": "cream",
+    "bisque": "beige",
+    "wheat": "tan",
+    "burlywood": "tan",
+    "tan": "tan",
+    "rosybrown": "brown",
+    "saddlebrown": "brown",
+    "sienna": "brown",
+    "chocolate": "brown",
+    "peru": "tan",
+    "olive": "olive",
+    "olivedrab": "olive",
+    "darkolivegreen": "olive",
+    "yellowgreen": "olive",
+    "darkkhaki": "khaki",
+    "darkgreen": "dark green",
+    "forestgreen": "forest green",
+    "seagreen": "sage green",
+    "darkseagreen": "sage green",
+    "mediumseagreen": "green",
+    "lightgreen": "mint green",
+    "palegreen": "mint green",
+    "springgreen": "mint green",
+    "mediumspringgreen": "mint green",
+    "lime": "lime green",
+    "limegreen": "lime green",
+    "lightcyan": "mint green",
+    "aquamarine": "mint green",
+    "mediumaquamarine": "teal",
+    "teal": "teal",
+    "darkcyan": "teal",
+    "cadetblue": "teal",
+    "turquoise": "turquoise",
+    "darkturquoise": "turquoise",
+    "mediumturquoise": "turquoise",
+    "paleturquoise": "mint green",
+    "cyan": "cyan",
+    "aqua": "cyan",
+    "darkmagenta": "purple",
+    "magenta": "magenta",
+    "fuchsia": "magenta",
+    "violet": "purple",
+    "darkviolet": "purple",
+    "blueviolet": "purple",
+    "mediumorchid": "purple",
+    "orchid": "purple",
+    "plum": "purple",
+    "thistle": "lavender",
+    "lavender": "lavender",
+    "lavenderblush": "lavender",
+    "mediumpurple": "purple",
+    "mediumslateblue": "slate blue",
+    "slateblue": "slate blue",
+    "darkslateblue": "slate blue",
+    "rebeccapurple": "purple",
+    "indigo": "indigo",
+}
+
+
+def _normalize_detailed_color(name: str) -> str:
+    if not name:
+        return ""
+    cleaned = str(name).strip().lower().replace("grey", "gray")
+    if not cleaned:
+        return ""
+    return DETAILED_COLOR_ALIASES.get(cleaned, cleaned)
+
+
+def resolve_detailed_color(color_result: ColorExtractionResult) -> str:
+    """Pick the most descriptive single-color term from K-means output.
+
+    Falls back to the 11-category color when no usable named candidate exists.
+    Skips ambiguous neutrals (e.g. CSS "gray" inside a non-gray cluster).
+    """
+    candidates = getattr(color_result, "candidates", None) or []
+    fashion_color = (color_result.color or "").strip().lower()
+
+    for cand in candidates:
+        named_list = cand.get("named_colors") or []
+        for named in named_list:
+            raw = (named.get("named_color") or "").strip().lower()
+            mapped = _normalize_detailed_color(raw)
+            if not mapped:
+                continue
+            # Skip plain "gray"/"black"/"white" when the fashion color is something else
+            if (
+                fashion_color
+                and fashion_color not in {"gray", "black", "white"}
+                and mapped in {"gray", "black", "white"}
+            ):
+                continue
+            return mapped
+        # If no named entries, fall back to this cluster's fashion color
+        cluster_color = (cand.get("color") or cand.get("fashion_color") or "").strip().lower()
+        if cluster_color:
+            return cluster_color
+
+    return fashion_color
+
+
 # ---------------------------------------------------------------------------
 # Text encoder (CLIP) — text-only mode
 # ---------------------------------------------------------------------------
@@ -1679,6 +1852,11 @@ You are a fashion search query analyzer. You receive:
 1. A user's Korean text query about clothing.
 2. An image of a clothing item (or related to clothing).
 3. Pre-extracted color information (from pixel-level K-means analysis — very accurate).
+   This includes TWO color labels:
+     * Dominant color (broad category): one of 11 canonical colors.
+     * Detailed color (precise shade): fashion-friendly fine-grained name
+       (e.g. "navy", "burgundy", "olive", "khaki", "charcoal", "sky blue",
+       "sage green", "indigo", "camel", "mustard"). May equal the broad color.
 
 Your task:
 - TRUST the pre-extracted color absolutely. DO NOT re-guess colors from the image.
@@ -1704,8 +1882,8 @@ Fields to return as JSON:
     * surface details (kangaroo pocket, ribbed cuffs, drawstring, zipper, buttons, embroidery, prints, patches, distressed, hood, collar, panels, etc.)
     * pattern TYPE only if non-solid (striped / checked / floral) — but NEVER a color name.
 - enhanced_query: ONE final English search query combining the target color + the design description. Format guideline: "a photo of <color> <garment-type> <key details>". 60-100 words OK.
-    * If color_mode is "target": use the user's requested color word.
-    * If color_mode is "same": use the pre-extracted dominant color word.
+    * If color_mode is "target": use the user's requested color word as-is (the Korean-derived target).
+    * If color_mode is "same": use the pre-extracted DETAILED color (e.g. "navy", "burgundy", "olive") — NOT the broad category. This preserves shade-level precision for FashionCLIP retrieval.
     * If color_mode is "different": include the user's requested color (if any). Do NOT include the image's original color.
     * If color_mode is "ignore": no color word.
 
@@ -1730,15 +1908,19 @@ async def analyze_query_intent_v2(
         ] if value
     )
 
-    fallback_enhanced_color = (
-        fallback_color
-        if fallback_color_mode in {"target", "different"}
-        else (color_result.color if fallback_color_mode == "same" else "")
-    )
+    detailed_color = resolve_detailed_color(color_result)
+
+    if fallback_color_mode in {"target", "different"}:
+        fallback_enhanced_color = fallback_color
+    elif fallback_color_mode == "same":
+        fallback_enhanced_color = detailed_color or color_result.color
+    else:
+        fallback_enhanced_color = ""
+
     fallback_enhanced = " ".join(
         word for word in [
             "a photo of",
-            fallback_enhanced_color or color_result.color,
+            fallback_enhanced_color or detailed_color or color_result.color,
             fallback_design,
             "clothing",
         ] if word
@@ -1764,8 +1946,9 @@ async def analyze_query_intent_v2(
 
     color_summary = (
         "Pre-extracted color information (highly accurate, from pixel analysis):\n"
-        f"- Dominant color: {color_result.color or 'unknown'} "
+        f"- Dominant color (broad category): {color_result.color or 'unknown'} "
         f"(ratio {color_result.dominant_ratio:.0%}, confidence {color_result.confidence})\n"
+        f"- Detailed color (precise shade for FashionCLIP): {detailed_color or color_result.color or 'unknown'}\n"
         f"- Secondary colors: {', '.join(color_result.secondary_colors) or 'none'}\n"
         f"- Mixed/multi-color: {color_result.is_mixed_color}\n"
         f"- Pattern: {color_result.pattern or 'solid'}\n"
@@ -1811,10 +1994,56 @@ async def analyze_query_intent_v2(
             intent.color_mode = "target"
         if not intent.enhanced_query:
             intent.enhanced_query = fallback.enhanced_query
+        intent.enhanced_query = enforce_detailed_color_in_query(
+            intent.enhanced_query,
+            intent.color_mode,
+            detailed_color,
+            color_result.color,
+        )
         return intent
     except Exception as exc:
         print(f"Gemini v2 analysis failed, fallback used: {exc}")
         return fallback
+
+
+_BROAD_COLOR_REPLACEMENTS = {
+    "blue", "red", "green", "yellow", "purple", "pink", "orange",
+    "brown", "white", "black", "gray", "grey",
+}
+
+
+def enforce_detailed_color_in_query(
+    enhanced_query: str,
+    color_mode: str,
+    detailed_color: str,
+    broad_color: str,
+) -> str:
+    """For color_mode == 'same', ensure the detailed shade appears in the query.
+
+    If Gemini wrote the broad category word (e.g. "blue") instead of the detailed
+    shade (e.g. "navy"), substitute the first occurrence of the broad word with
+    the detailed shade. If neither appears, prepend the detailed shade.
+    """
+    if color_mode != "same":
+        return enhanced_query
+    detail = (detailed_color or "").strip()
+    broad = (broad_color or "").strip().lower()
+    if not detail:
+        return enhanced_query
+    text = enhanced_query or ""
+    detail_lower = detail.lower()
+    if detail_lower in text.lower():
+        return text
+    if broad and broad in _BROAD_COLOR_REPLACEMENTS:
+        pattern = re.compile(rf"\b{re.escape(broad)}\b", re.IGNORECASE)
+        replaced, count = pattern.subn(detail, text, count=1)
+        if count:
+            return replaced
+    # No broad color present — inject after "a photo of" prefix if possible
+    prefix = "a photo of"
+    if text.lower().startswith(prefix):
+        return f"{prefix} {detail}{text[len(prefix):]}"
+    return f"a photo of {detail} {text}".strip()
 
 
 # ---------------------------------------------------------------------------
@@ -2088,6 +2317,7 @@ def log_search_debug(
     results,
     search_warnings=None,
     query_attrs=None,
+    detailed_color: str = "",
 ):
     intent_payload = intent.model_dump() if hasattr(intent, "model_dump") else intent.dict()
     print("\n[FashionCLIP v2 Search Debug]")
@@ -2096,6 +2326,7 @@ def log_search_debug(
     print(f"main_categories={main_categories}")
     print(f"sub_categories={sub_categories}")
     print(f"query_image_color={query_image_color}")
+    print(f"query_image_color_detailed={detailed_color}")
     if query_attrs:
         print(f"query_image_color_group={query_attrs.get('target_color_group') or ''}")
         print(f"query_denim_tone={query_attrs.get('denim_tone') or ''}")
@@ -2171,10 +2402,11 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
         denim_context_pre = is_denim_query_context(query, main_categories, sub_categories)
         pattern_context_text = f"{query or ''}"
         color_result = extract_query_color_result(image_obj, denim_context_pre, pattern_context_text)
+        detailed_color = resolve_detailed_color(color_result)
 
         # ─── STAGE 0b: Gemini multimodal intent analysis ───
         if image_only_search:
-            same_color_word = color_result.color or ""
+            same_color_word = detailed_color or color_result.color or ""
             intent = QueryIntent(
                 reasoning="image only search",
                 is_fashion=True,
@@ -2295,6 +2527,7 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
             results=results,
             search_warnings=search_warnings,
             query_attrs=query_attrs,
+            detailed_color=detailed_color,
         )
 
         return {
@@ -2305,6 +2538,7 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
             "design_description": intent.design_description,
             "color_extracted": {
                 "color": color_result.color,
+                "detailed_color": detailed_color,
                 "confidence": color_result.confidence,
                 "pattern": color_result.pattern,
                 "secondary_colors": color_result.secondary_colors,

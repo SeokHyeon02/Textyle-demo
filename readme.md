@@ -222,3 +222,15 @@ EXPO_PUBLIC_FASHION_API_URL=http://{IP주소}:8001
 "변경 요구사항 텍스트" 입력
 v1 버튼 눌러서 결과 확인 → 다른 옷 검색하기
 v2 버튼 눌러서 같은 입력으로 결과 비교
+
+---
+
+6️⃣ v2 검색 서버 (`fashion_main_v2.py`, 포트 8002)
+
+v1(이미지+텍스트 벡터 가중합) 대비 핵심 변경점:
+
+- **이미지 임베딩 제거**: CLIP 텍스트 인코더만 사용. 이미지의 시각 벡터가 검색 벡터에 섞이지 않아 색상 교체 쿼리의 정확도가 높아짐.
+- **K-means 색상 추출 → Gemini 입력**: 이미지 픽셀에서 K-means로 색상을 먼저 추출해 Gemini에 전달. Gemini는 색을 재추측하지 않고 디자인/실루엣/소재만 영어로 서술(`design_description`).
+- **세분화된 색상(detailed color) 활용**: K-means가 추출한 정밀 색명(navy, burgundy, olive, charcoal 등)을 `enhanced_query`에 사용. 리랭킹용 11가지 broad 카테고리(blue, red 등)로 단순화하기 전 값이므로 색조 수준의 검색 정밀도 향상. `color_mode=same`(같은 색 유지) 쿼리에만 적용.
+- **Gemini `is_fashion` 검증**: v1의 CLIP zero-shot 패션 판별 대신 Gemini 응답으로 비패션 이미지 거부.
+- **응답 필드 추가**: `design_description`, `color_extracted.detailed_color` 포함.
