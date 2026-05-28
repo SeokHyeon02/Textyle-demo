@@ -318,8 +318,8 @@ def _named_color_palette() -> list[tuple[str, str, tuple]]:
     palette = []
     for name, value in ImageColor.colormap.items():
         try:
-            rgb = ImageColor.getrgb(value)
-        except ValueError:
+            rgb = tuple(value[:3]) if isinstance(value, tuple) else ImageColor.getrgb(value)
+        except (TypeError, ValueError):
             continue
         palette.append((name, named_color_group(name), rgb))
     _NAMED_COLOR_PALETTE_CACHE = palette
@@ -904,6 +904,28 @@ def search_color_candidates(
     )
 
 
+def enrich_search_color_candidate(candidate: dict, fashion_candidates: list[dict]) -> dict:
+    enriched = dict(candidate)
+    base_color = candidate.get("base_color") or candidate.get("color")
+    for fashion_candidate in fashion_candidates:
+        if fashion_candidate.get("color") != base_color:
+            continue
+        named_colors = fashion_candidate.get("named_colors") or []
+        if named_colors:
+            top_named = named_colors[0]
+            enriched["named_color"] = top_named.get("named_color", "")
+            enriched["rgb"] = top_named.get("rgb")
+        else:
+            enriched["rgb"] = fashion_candidate.get("rgb")
+        if enriched.get("rgb") and not enriched.get("named_color"):
+            name, group, named_rgb = nearest_named_color(enriched["rgb"])
+            enriched["named_color"] = name
+            enriched["named_group"] = group
+            enriched["named_rgb"] = named_rgb
+        return enriched
+    return enriched
+
+
 # ---------------------------------------------------------------------------
 # Pixel extraction helpers
 # ---------------------------------------------------------------------------
@@ -1250,7 +1272,7 @@ def extract_dominant_color_result(
         search_weights[sc["color"]] = max(
             search_weights.get(sc["color"], 0.0), sc["score"],
         )
-        result_candidates.append(sc)
+        result_candidates.append(enrich_search_color_candidate(sc, fashion_candidates))
 
     # --- 6. Build result ------------------------------------------------------
     top = fashion_candidates[0]
