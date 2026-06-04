@@ -2760,34 +2760,52 @@ def l2_normalize_array(embeddings):
     return array / np.linalg.norm(array, ord=2, axis=-1, keepdims=True)
 
 
+def _project_clip_features(outputs, projection):
+    """transformers 버전에 따라 get_image_features / get_text_features 가
+    텐서를 돌려주기도 하고 BaseModelOutputWithPooling 객체를 돌려주기도 한다.
+    어느 경우든 DB의 512차원 projected 임베딩과 같은 벡터를 반환하도록 보정한다."""
+    if torch.is_tensor(outputs):
+        return outputs
+    image_embeds = getattr(outputs, "image_embeds", None)
+    if image_embeds is not None:
+        return image_embeds
+    text_embeds = getattr(outputs, "text_embeds", None)
+    if text_embeds is not None:
+        return text_embeds
+    pooled = getattr(outputs, "pooler_output", None)
+    if pooled is None:
+        pooled = extract_feature_tensor(outputs)
+    # projection이 아직 적용되지 않은 tower 출력이면(예: 이미지 768차원) projection을 적용한다.
+    if projection is not None and hasattr(projection, "in_features") and pooled.shape[-1] == projection.in_features:
+        return projection(pooled)
+    return pooled
+
+
 def encode_image_with_fashion_clip_api(image_obj: Image.Image):
     rgb_image = image_obj.convert("RGB")
-    fd, temp_path = tempfile.mkstemp(suffix=".jpg")
-    os.close(fd)
-    try:
-        rgb_image.save(temp_path, format="JPEG", quality=95)
-        images = [temp_path]
-        image_embeddings = fclip.encode_images(images, batch_size=32)
-        image_embeddings = image_embeddings / np.linalg.norm(image_embeddings, ord=2, axis=-1, keepdims=True)
-    finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
-    return torch.from_numpy(image_embeddings).to(device)
+    inputs = processor(images=rgb_image, return_tensors="pt").to(device)
+    with torch.no_grad():
+        outputs = model.get_image_features(**inputs)
+        features = _project_clip_features(outputs, getattr(model, "visual_projection", None))
+    return F.normalize(features, p=2, dim=-1)
 
 
 def encode_text_with_fashion_clip_api(text: str):
-    texts = [text]
-    text_embeddings = fclip.encode_text(texts, batch_size=32)
-    text_embeddings = text_embeddings / np.linalg.norm(text_embeddings, ord=2, axis=-1, keepdims=True)
-    return torch.from_numpy(text_embeddings).to(device)
+    return encode_texts_with_fashion_clip_api([text])
 
 
 def encode_texts_with_fashion_clip_api(texts: list[str]):
-    text_embeddings = fclip.encode_text(texts, batch_size=32)
-    text_embeddings = text_embeddings / np.linalg.norm(text_embeddings, ord=2, axis=-1, keepdims=True)
-    return torch.from_numpy(text_embeddings).to(device)
+    inputs = processor(
+        text=list(texts),
+        return_tensors="pt",
+        padding="max_length",
+        max_length=77,
+        truncation=True,
+    ).to(device)
+    with torch.no_grad():
+        outputs = model.get_text_features(**inputs)
+        features = _project_clip_features(outputs, getattr(model, "text_projection", None))
+    return F.normalize(features, p=2, dim=-1)
 
 
 def get_image_embedding(image_obj: Image.Image):

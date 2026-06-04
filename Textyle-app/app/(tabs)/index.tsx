@@ -17,11 +17,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../supabase';
+import { addBookmark, fetchBookmarkedIds, removeBookmark } from '../../lib/bookmarks';
 
 const FASHION_API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '');
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/200?text=No+Image';
 
 type SearchResult = {
+  id?: number | null;
   image_url?: string | null;
   main_category?: string | null;
   sub_category?: string | null;
@@ -41,6 +43,8 @@ export default function SearchScreen() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [bookmarkedIds, setBookmarkedIds] = useState<Set<number>>(new Set());
+  const [togglingIds, setTogglingIds] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -48,6 +52,70 @@ export default function SearchScreen() {
 
     return () => data.subscription.unsubscribe();
   }, []);
+
+  // 검색 결과가 바뀌면, 그 중 이미 찜한 상품들의 하트를 채워서 표시한다.
+  useEffect(() => {
+    if (!session?.user?.id || searchResults.length === 0) return;
+    let active = true;
+    fetchBookmarkedIds(session.user.id)
+      .then((ids) => {
+        if (active) setBookmarkedIds(new Set(ids));
+      })
+      .catch((error) => console.warn('찜 목록 조회 실패:', error));
+    return () => {
+      active = false;
+    };
+  }, [session?.user?.id, searchResults]);
+
+  const toggleBookmark = async (item: SearchResult) => {
+    const userId = session?.user?.id;
+    if (!userId) {
+      Alert.alert('알림', '찜하려면 로그인이 필요합니다.');
+      return;
+    }
+    if (item.id === null || item.id === undefined) {
+      Alert.alert('알림', '이 상품은 찜할 수 없습니다.');
+      return;
+    }
+
+    const clothId = item.id;
+    if (togglingIds.has(clothId)) return; // 연타 방지
+
+    const wasBookmarked = bookmarkedIds.has(clothId);
+
+    // 낙관적 업데이트: 먼저 UI를 바꾸고, 실패하면 되돌린다.
+    setTogglingIds((prev) => new Set(prev).add(clothId));
+    setBookmarkedIds((prev) => {
+      const next = new Set(prev);
+      if (wasBookmarked) next.delete(clothId);
+      else next.add(clothId);
+      return next;
+    });
+
+    try {
+      if (wasBookmarked) {
+        await removeBookmark(userId, clothId);
+      } else {
+        await addBookmark(userId, clothId);
+      }
+    } catch (error) {
+      // 롤백
+      setBookmarkedIds((prev) => {
+        const next = new Set(prev);
+        if (wasBookmarked) next.add(clothId);
+        else next.delete(clothId);
+        return next;
+      });
+      console.error('찜 처리 실패:', error);
+      Alert.alert('오류', '찜 처리에 실패했습니다. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(clothId);
+        return next;
+      });
+    }
+  };
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -204,14 +272,33 @@ export default function SearchScreen() {
             <>
               {searchResults.map((item, index) => {
                 const similarityText = formatSimilarity(item.similarity);
+                const canBookmark = item.id !== null && item.id !== undefined;
+                const isBookmarked = canBookmark && bookmarkedIds.has(item.id as number);
+                const isToggling = canBookmark && togglingIds.has(item.id as number);
 
                 return (
-                  <View key={`${item.name ?? 'result'}-${index}`} style={styles.resultCard}>
-                    <Image
-                      source={{ uri: getValidImageUrl(item.image_url) }}
-                      style={styles.resultImage}
-                      resizeMode="cover"
-                    />
+                  <View key={`${item.id ?? item.name ?? 'result'}-${index}`} style={styles.resultCard}>
+                    <View style={styles.resultImageWrap}>
+                      <Image
+                        source={{ uri: getValidImageUrl(item.image_url) }}
+                        style={styles.resultImage}
+                        resizeMode="cover"
+                      />
+                      {canBookmark && (
+                        <TouchableOpacity
+                          style={styles.heartButton}
+                          onPress={() => toggleBookmark(item)}
+                          disabled={isToggling}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          activeOpacity={0.8}>
+                          <Ionicons
+                            name={isBookmarked ? 'heart' : 'heart-outline'}
+                            size={20}
+                            color={isBookmarked ? '#EF4444' : '#FFFFFF'}
+                          />
+                        </TouchableOpacity>
+                      )}
+                    </View>
                     <View style={styles.resultInfo}>
                       <View style={styles.infoSection}>
                         <Text style={styles.infoLabel}>브랜드</Text>
@@ -536,12 +623,27 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 14,
   },
+  resultImageWrap: {
+    width: 116,
+    height: 148,
+    marginRight: 14,
+  },
   resultImage: {
     width: 116,
     height: 148,
     borderRadius: 6,
-    marginRight: 14,
     backgroundColor: '#F4F4F4',
+  },
+  heartButton: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.38)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   resultInfo: {
     flex: 1,
