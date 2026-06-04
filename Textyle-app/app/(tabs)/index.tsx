@@ -19,7 +19,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../supabase';
 
 const FASHION_API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '');
+// v3 서버는 포트만 8001 → 8003 으로 치환 (별도 env 불필요)
+const FASHION_API_V3_URL = FASHION_API_URL?.replace(/:8001(\/|$)/, ':8003$1');
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/200?text=No+Image';
+
+type SearchVersion = 'v1' | 'v3';
 
 type SearchResult = {
   image_url?: string | null;
@@ -38,9 +42,16 @@ export default function SearchScreen() {
   const [selectedImage, setSelectedImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [searchText, setSearchText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingVersion, setLoadingVersion] = useState<SearchVersion | null>(null);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [resultVersion, setResultVersion] = useState<SearchVersion | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // v3 테스트 노브 (비우면 서버 기본값 사용)
+  const [imageWeightInput, setImageWeightInput] = useState('');     // w2
+  const [scoreThresholdInput, setScoreThresholdInput] = useState(''); // 하드컷
+  const [colorPenaltyInput, setColorPenaltyInput] = useState('');   // 색 페널티 배율
+  const [changeGate, setChangeGate] = useState(true);               // change 쿼리에서 w2=0
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -65,13 +76,31 @@ export default function SearchScreen() {
     }
   };
 
-  const searchClothes = async (version: 'v1' | 'v2' = 'v1') => {
+  const parseKnob = (value: string): number | null => {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const searchClothes = async (version: SearchVersion = 'v1') => {
     if (!imageUri) {
       setErrorMessage('검색할 사진을 먼저 선택해주세요.');
       return;
     }
 
+    const baseUrl = version === 'v3' ? FASHION_API_V3_URL : FASHION_API_URL;
+    if (!baseUrl) {
+      setErrorMessage(
+        version === 'v3'
+          ? 'v3 서버 URL을 만들 수 없습니다. EXPO_PUBLIC_FASHION_API_URL이 :8001 포트를 포함하는지 확인해주세요.'
+          : 'EXPO_PUBLIC_FASHION_API_URL 환경변수가 설정되지 않았습니다.',
+      );
+      return;
+    }
+
     setIsLoading(true);
+    setLoadingVersion(version);
     setErrorMessage(null);
 
     try {
@@ -88,6 +117,16 @@ export default function SearchScreen() {
 
       formData.append('query', searchText.trim());
 
+      if (version === 'v3') {
+        const iw = parseKnob(imageWeightInput);
+        const st = parseKnob(scoreThresholdInput);
+        const cp = parseKnob(colorPenaltyInput);
+        if (iw !== null) formData.append('image_weight', String(iw));
+        if (st !== null) formData.append('score_threshold', String(st));
+        if (cp !== null) formData.append('color_penalty_scale', String(cp));
+        formData.append('change_gate', changeGate ? 'true' : 'false');
+      }
+
       const response = await fetch(`${baseUrl}/search`, {
         method: 'POST',
         body: formData,
@@ -100,6 +139,7 @@ export default function SearchScreen() {
 
       const data = await response.json();
       setSearchResults(Array.isArray(data.results) ? data.results : []);
+      setResultVersion(version);
       setHasSearched(true);
     } catch (error) {
       console.error('검색 에러:', error);
@@ -185,7 +225,16 @@ export default function SearchScreen() {
         <ScrollView contentContainerStyle={styles.resultContent}>
           <View style={styles.resultHeader}>
             <Text style={styles.screenTitle}>검색 결과</Text>
-            <Text style={styles.resultCount}>{searchResults.length}개 상품</Text>
+            <View style={styles.resultHeaderRight}>
+              {resultVersion && (
+                <View style={[styles.versionBadge, resultVersion === 'v3' ? styles.versionBadgeV3 : styles.versionBadgeV1]}>
+                  <Text style={styles.versionBadgeText}>
+                    {resultVersion === 'v3' ? 'v3 하이브리드' : 'v1 기본'}
+                  </Text>
+                </View>
+              )}
+              <Text style={styles.resultCount}>{searchResults.length}개 상품</Text>
+            </View>
           </View>
 
           {searchResults.length === 0 ? (
@@ -316,17 +365,81 @@ export default function SearchScreen() {
           <Text style={styles.helperText}>검색어는 선택 사항입니다. 사진만으로도 검색할 수 있어요.</Text>
         )}
 
+        <View style={styles.knobPanel}>
+          <Text style={styles.knobPanelTitle}>🧪 v3 테스트 노브 (비우면 서버 기본값)</Text>
+          <View style={styles.knobRow}>
+            <View style={styles.knobField}>
+              <Text style={styles.knobLabel}>image_weight (w2)</Text>
+              <TextInput
+                style={styles.knobInput}
+                placeholder="0.5"
+                placeholderTextColor="#8E8E8E"
+                value={imageWeightInput}
+                onChangeText={setImageWeightInput}
+                keyboardType="decimal-pad"
+              />
+            </View>
+            <View style={styles.knobField}>
+              <Text style={styles.knobLabel}>score_threshold</Text>
+              <TextInput
+                style={styles.knobInput}
+                placeholder="0.15"
+                placeholderTextColor="#8E8E8E"
+                value={scoreThresholdInput}
+                onChangeText={setScoreThresholdInput}
+                keyboardType="decimal-pad"
+              />
+            </View>
+          </View>
+          <View style={styles.knobRow}>
+            <View style={styles.knobField}>
+              <Text style={styles.knobLabel}>color_penalty_scale</Text>
+              <TextInput
+                style={styles.knobInput}
+                placeholder="2.0"
+                placeholderTextColor="#8E8E8E"
+                value={colorPenaltyInput}
+                onChangeText={setColorPenaltyInput}
+                keyboardType="decimal-pad"
+              />
+            </View>
+            <TouchableOpacity
+              style={styles.gateToggle}
+              onPress={() => setChangeGate(prev => !prev)}
+              activeOpacity={0.7}>
+              <View style={[styles.checkbox, changeGate && styles.checkboxChecked]}>
+                {changeGate && <Ionicons name="checkmark" size={15} color="#FFFFFF" />}
+              </View>
+              <Text style={styles.gateToggleLabel}>change-gate{'\n'}(색 교체 시 w2=0)</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         <TouchableOpacity
           style={[styles.primaryButton, isLoading && styles.disabledButton]}
-          onPress={searchClothes}
+          onPress={() => searchClothes('v1')}
           disabled={isLoading}>
-          {isLoading ? (
+          {isLoading && loadingVersion === 'v1' ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator color="#fff" />
               <Text style={styles.primaryButtonText}>찾는 중...</Text>
             </View>
           ) : (
-            <Text style={styles.primaryButtonText}>비슷한 옷 찾기</Text>
+            <Text style={styles.primaryButtonText}>비슷한 옷 찾기 (v1)</Text>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.v3Button, isLoading && styles.disabledButton]}
+          onPress={() => searchClothes('v3')}
+          disabled={isLoading}>
+          {isLoading && loadingVersion === 'v3' ? (
+            <View style={styles.loadingRow}>
+              <ActivityIndicator color="#fff" />
+              <Text style={styles.primaryButtonText}>찾는 중...</Text>
+            </View>
+          ) : (
+            <Text style={styles.primaryButtonText}>🧪 v3로 검색 (하이브리드)</Text>
           )}
         </TouchableOpacity>
       </ScrollView>
@@ -486,6 +599,80 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 10,
   },
+  v3Button: {
+    width: '100%',
+    maxWidth: 430,
+    minHeight: 52,
+    borderRadius: 6,
+    backgroundColor: '#16A34A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    marginTop: 10,
+  },
+  knobPanel: {
+    width: '100%',
+    maxWidth: 430,
+    marginTop: 14,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E4E7EC',
+    backgroundColor: '#F8FAFB',
+  },
+  knobPanelTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#393C41',
+    marginBottom: 10,
+  },
+  knobRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 10,
+  },
+  knobField: {
+    flex: 1,
+  },
+  knobLabel: {
+    fontSize: 11,
+    color: '#5C5E62',
+    marginBottom: 4,
+  },
+  knobInput: {
+    height: 42,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E4E7EC',
+    backgroundColor: '#FFFFFF',
+    color: '#171A20',
+    paddingHorizontal: 12,
+    fontSize: 14,
+  },
+  gateToggle: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  gateToggleLabel: {
+    flex: 1,
+    fontSize: 11,
+    color: '#393C41',
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#16A34A',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxChecked: {
+    backgroundColor: '#16A34A',
+  },
   resultHeader: {
     width: '100%',
     maxWidth: 430,
@@ -493,8 +680,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 24,
   },
-  resultCount: {
+  resultHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
     marginTop: 6,
+  },
+  versionBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  versionBadgeV1: {
+    backgroundColor: '#EBEEF5',
+  },
+  versionBadgeV3: {
+    backgroundColor: '#D7F2E5',
+  },
+  versionBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#393C41',
+  },
+  resultCount: {
     color: '#5C5E62',
     fontSize: 14,
     textAlign: 'center',
