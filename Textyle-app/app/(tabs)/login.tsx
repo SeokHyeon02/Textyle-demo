@@ -2,32 +2,40 @@ import { FontAwesome } from '@expo/vector-icons';
 import * as Google from 'expo-auth-session/providers/google';
 import { router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
+import type { Session } from '@supabase/supabase-js';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../supabase';
 
 WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen() {
-  const [session, setSession] = useState<any>(null);
-  
-  // 👈 이메일, 비밀번호 입력을 위한 상태 추가
+  const [session, setSession] = useState<Session | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // 구글 로그인 설정 (이전에 발급받은 클라이언트 ID를 넣어주세요)
   const [request, response, promptAsync] = Google.useAuthRequest({
     webClientId: '509294193303-6fc0fgvftk04hb7l0frqta6lmmejdoop.apps.googleusercontent.com',
-    iosClientId: '509294193303-km6ho5gcvu02cfhiqlurc2dbppindte3.apps.googleusercontent.com', 
+    iosClientId: '509294193303-km6ho5gcvu02cfhiqlurc2dbppindte3.apps.googleusercontent.com',
   });
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
-    supabase.auth.onAuthStateChange((_event, session) => setSession(session));
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => setSession(session));
+
+    return () => data.subscription.unsubscribe();
   }, []);
 
-  // 구글 로그인 처리
   useEffect(() => {
     if (response?.type === 'success') {
       const { id_token } = response.params;
@@ -38,114 +46,232 @@ export default function LoginScreen() {
     }
   }, [response]);
 
-  // ✉️ 일반 이메일 로그인 함수
   const signInWithEmail = async () => {
+    if (!email.trim() || !password) {
+      Alert.alert('알림', '이메일과 비밀번호를 입력해주세요.');
+      return;
+    }
+
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) Alert.alert('로그인 실패', error.message);
+    const { error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+
+    if (error) {
+      Alert.alert('로그인 실패', error.message);
+    }
     setLoading(false);
   };
-
 
   const signOut = async () => {
     await supabase.auth.signOut();
   };
 
-  // ------------------------------------------------------------------
-  // 로그인 안 된 상태 화면 (이메일 폼 + 구글 로그인)
-  // ------------------------------------------------------------------
   if (!session) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>TexTyle AI</Text>
-        <Text style={styles.subtitle}>이메일 또는 구글로 시작하세요</Text>
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.container}>
+          <Text style={styles.title}>Textyle 로그인</Text>
+          <Text style={styles.subtitle}>검색 결과를 확인하려면 로그인해주세요.</Text>
 
-        {/* 이메일/비밀번호 입력창 */}
-        <TextInput
-          style={styles.input}
-          placeholder="이메일 주소"
-          value={email}
-          onChangeText={setEmail}
-          autoCapitalize="none"
-          keyboardType="email-address"
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="비밀번호 (6자리 이상)"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry // 비밀번호 가리기
-          autoCapitalize="none"
-        />
+          <TextInput
+            style={styles.input}
+            placeholder="이메일 주소"
+            placeholderTextColor="#8E8E8E"
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+            keyboardType="email-address"
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="비밀번호"
+            placeholderTextColor="#8E8E8E"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            autoCapitalize="none"
+          />
 
-        {/* 이메일 로그인 & 가입 버튼 */}
-        <View style={styles.buttonRow}>
-          <TouchableOpacity style={[styles.button, styles.signInBtn]} onPress={signInWithEmail} disabled={loading}>
-            <Text style={styles.buttonText}>로그인</Text>
+          <TouchableOpacity
+            style={[styles.primaryButton, loading && styles.disabledButton]}
+            onPress={signInWithEmail}
+            disabled={loading}>
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.primaryButtonText}>로그인</Text>
+            )}
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.button, styles.signUpBtn]} onPress={() => router.push('/signup')} disabled={loading}>
-            <Text style={[styles.buttonText, styles.signUpText]}>회원가입</Text>
+
+          <TouchableOpacity
+            style={styles.secondaryButton}
+            onPress={() => router.push('/signup')}
+            disabled={loading}>
+            <Text style={styles.secondaryButtonText}>회원가입</Text>
+          </TouchableOpacity>
+
+          <View style={styles.divider}>
+            <View style={styles.line} />
+            <Text style={styles.orText}>또는</Text>
+            <View style={styles.line} />
+          </View>
+
+          <TouchableOpacity
+            style={[styles.googleButton, (!request || loading) && styles.disabledButton]}
+            onPress={() => promptAsync()}
+            disabled={!request || loading}>
+            <FontAwesome name="google" size={18} color="#FFFFFF" style={styles.icon} />
+            <Text style={styles.googleButtonText}>Google로 시작하기</Text>
           </TouchableOpacity>
         </View>
-
-        {loading && <ActivityIndicator size="large" color="#8A2BE2" style={{ marginVertical: 20 }} />}
-
-        <View style={styles.divider}>
-          <View style={styles.line} />
-          <Text style={styles.orText}>또는</Text>
-          <View style={styles.line} />
-        </View>
-        
-        {/* 구글 로그인 버튼 */}
-        <TouchableOpacity style={styles.googleButton} onPress={() => promptAsync()} disabled={!request}>
-          <FontAwesome name="google" size={20} color="#fff" style={styles.icon} />
-          <Text style={styles.googleButtonText}>Google로 시작하기</Text>
-        </TouchableOpacity>
-      </View>
+      </SafeAreaView>
     );
   }
 
-  // ------------------------------------------------------------------
-  // 로그인 된 상태 (마이페이지)
-  // ------------------------------------------------------------------
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>마이페이지</Text>
-      <View style={styles.profileCard}>
-        <FontAwesome name="user-circle" size={80} color="#ddd" />
-        <Text style={styles.email}>{session.user.email}</Text>
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.container}>
+        <Text style={styles.title}>내 계정</Text>
+        <Text style={styles.subtitle}>검색 탭에서 이미지 검색을 시작할 수 있습니다.</Text>
+
+        <View style={styles.profilePanel}>
+          <FontAwesome name="user-circle" size={68} color="#D0D1D2" />
+          <Text style={styles.email}>{session.user.email}</Text>
+        </View>
+
+        <TouchableOpacity style={styles.logoutButton} onPress={signOut}>
+          <Text style={styles.logoutButtonText}>로그아웃</Text>
+        </TouchableOpacity>
       </View>
-      <TouchableOpacity style={styles.logoutButton} onPress={signOut}>
-        <Text style={styles.logoutButtonText}>로그아웃</Text>
-      </TouchableOpacity>
-    </View>
+    </SafeAreaView>
   );
 }
 
-// 스타일
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20, backgroundColor: '#fff', justifyContent: 'center' },
-  title: { fontSize: 28, fontWeight: 'bold', marginBottom: 5, textAlign: 'center', color: '#333' },
-  subtitle: { fontSize: 16, color: '#666', marginBottom: 30, textAlign: 'center' },
-  
-  input: { backgroundColor: '#f5f5f5', padding: 15, borderRadius: 10, marginBottom: 15, fontSize: 16, borderWidth: 1, borderColor: '#eee' },
-  buttonRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
-  button: { paddingVertical: 15, borderRadius: 10, width: '48%', alignItems: 'center' },
-  signInBtn: { backgroundColor: '#8A2BE2' },
-  signUpBtn: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#8A2BE2' },
-  signUpText: { color: '#8A2BE2' },
-  buttonText: { fontSize: 16, fontWeight: 'bold', color: '#fff' },
-  
-  divider: { flexDirection: 'row', alignItems: 'center', marginVertical: 20 },
-  line: { flex: 1, height: 1, backgroundColor: '#eee' },
-  orText: { marginHorizontal: 10, color: '#888' },
-
-  googleButton: { flexDirection: 'row', backgroundColor: '#4285F4', padding: 15, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  icon: { marginRight: 15 },
-  googleButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-
-  profileCard: { backgroundColor: '#f9f9f9', padding: 30, borderRadius: 15, alignItems: 'center', marginBottom: 40, borderWidth: 1, borderColor: '#eee' },
-  email: { fontSize: 18, color: '#555', marginTop: 15 },
-  logoutButton: { backgroundColor: '#eee', paddingVertical: 15, borderRadius: 10, alignItems: 'center' },
-  logoutButtonText: { color: '#333', fontSize: 16, fontWeight: 'bold' }
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  container: {
+    flex: 1,
+    paddingHorizontal: 20,
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  title: {
+    fontSize: 28,
+    fontWeight: '600',
+    marginBottom: 8,
+    textAlign: 'center',
+    color: '#171A20',
+  },
+  subtitle: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: '#393C41',
+    marginBottom: 28,
+    textAlign: 'center',
+  },
+  input: {
+    minHeight: 52,
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    marginBottom: 12,
+    fontSize: 15,
+    borderWidth: 1,
+    borderColor: '#EEEEEE',
+    color: '#171A20',
+  },
+  primaryButton: {
+    minHeight: 52,
+    borderRadius: 6,
+    backgroundColor: '#3E6AE1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+  },
+  primaryButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  secondaryButton: {
+    minHeight: 50,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#D0D1D2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+    backgroundColor: '#FFFFFF',
+  },
+  secondaryButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#393C41',
+  },
+  disabledButton: {
+    opacity: 0.68,
+  },
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 22,
+  },
+  line: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#EEEEEE',
+  },
+  orText: {
+    marginHorizontal: 12,
+    color: '#5C5E62',
+    fontSize: 13,
+  },
+  googleButton: {
+    minHeight: 52,
+    flexDirection: 'row',
+    backgroundColor: '#171A20',
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  icon: {
+    marginRight: 12,
+  },
+  googleButtonText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  profilePanel: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 180,
+    borderRadius: 8,
+    backgroundColor: '#F4F4F4',
+    marginBottom: 24,
+    paddingHorizontal: 18,
+  },
+  email: {
+    fontSize: 16,
+    color: '#393C41',
+    marginTop: 14,
+    textAlign: 'center',
+  },
+  logoutButton: {
+    minHeight: 50,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F4F4F4',
+  },
+  logoutButtonText: {
+    color: '#393C41',
+    fontSize: 15,
+    fontWeight: '600',
+  },
 });

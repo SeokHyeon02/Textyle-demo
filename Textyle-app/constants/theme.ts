@@ -5,8 +5,20 @@
 
 import { Platform } from 'react-native';
 
-const tintColorLight = '#0a7ea4';
+const tintColorLight = '#3E6AE1';
 const tintColorDark = '#fff';
+
+export const TextylePalette = {
+  primary: '#3E6AE1',
+  background: '#FFFFFF',
+  surface: '#F4F4F4',
+  textPrimary: '#171A20',
+  textSecondary: '#393C41',
+  textMuted: '#5C5E62',
+  placeholder: '#8E8E8E',
+  border: '#EEEEEE',
+  danger: '#B42318',
+};
 
 export const Colors = {
   light: {

@@ -21,3 +21,11 @@ AGENTS.md
 CLAUDE.md
 **/AGENTS.md
 **/CLAUDE.md
+
+# bkit-codex
+.bkit-codex/
+
+# Local test artifacts and design notes
+**/test/
+**/*test*.*
+Textyle-app/DESIGN.md
