@@ -112,6 +112,22 @@ export default function BookmarksScreen() {
     }
   };
 
+  // 찜 카드를 터치하면 상품 정보 페이지(모달)를 띄운다.
+  const openDetail = (row: BookmarkRow) => {
+    const cloth = row.clothes;
+    router.push({
+      pathname: '/product',
+      params: {
+        id: String(row.cloth_id),
+        imageUrl: cloth?.image_url ?? '',
+        brand: cloth?.brand_name ?? '',
+        name: cloth?.name ?? '',
+        price: cloth?.price != null ? String(cloth.price) : '',
+        shopLink: cloth?.shop_link ?? '',
+      },
+    });
+  };
+
   const getValidImageUrl = (url?: string | null) => {
     if (!url) return PLACEHOLDER_IMAGE_URL;
     const validUrl = url.trim();
@@ -187,7 +203,11 @@ export default function BookmarksScreen() {
             const isRemoving = removingIds.has(row.cloth_id);
 
             return (
-              <View key={row.cloth_id} style={styles.resultCard}>
+              <TouchableOpacity
+                key={row.cloth_id}
+                style={styles.resultCard}
+                activeOpacity={0.85}
+                onPress={() => openDetail(row)}>
                 <View style={styles.resultImageWrap}>
                   <Image
                     source={{ uri: getValidImageUrl(cloth?.image_url) }}
@@ -237,7 +257,7 @@ export default function BookmarksScreen() {
                     <Text style={styles.linkButtonText}>상품 보러가기</Text>
                   </TouchableOpacity>
                 </View>
-              </View>
+              </TouchableOpacity>
             );
           })
         )}

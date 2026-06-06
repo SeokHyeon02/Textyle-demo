@@ -1,8 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import type { Session } from '@supabase/supabase-js';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,6 +20,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../supabase';
 import { addBookmark, fetchBookmarkedIds, removeBookmark } from '../../lib/bookmarks';
+import { consumeSearchPresetImage } from '../../lib/searchPreset';
 
 const FASHION_API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '');
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/200?text=No+Image';
@@ -52,6 +55,20 @@ export default function SearchScreen() {
 
     return () => data.subscription.unsubscribe();
   }, []);
+
+  // 상품 상세의 '검색하기'로 넘어온 경우, 그 상품 이미지를 검색 입력으로 자동 첨부한다.
+  useFocusEffect(
+    useCallback(() => {
+      const presetUrl = consumeSearchPresetImage();
+      if (presetUrl) {
+        setImageUri(presetUrl);
+        setSelectedImage(null);
+        setSearchText('');
+        setHasSearched(false);
+        setErrorMessage(null);
+      }
+    }, [])
+  );
 
   // 검색 결과가 바뀌면, 그 중 이미 찜한 상품들의 하트를 채워서 표시한다.
   useEffect(() => {
@@ -148,9 +165,18 @@ export default function SearchScreen() {
       }
 
       const formData = new FormData();
-      const uploadUri = selectedImage?.uri || imageUri;
-      const fileName = selectedImage?.fileName || 'photo.jpg';
-      const mimeType = selectedImage?.mimeType || 'image/jpeg';
+      let uploadUri = selectedImage?.uri || imageUri;
+      let fileName = selectedImage?.fileName || 'photo.jpg';
+      let mimeType = selectedImage?.mimeType || 'image/jpeg';
+
+      // 상품 상세에서 넘어온 원격 이미지(http)는 업로드 가능한 로컬 파일로 먼저 내려받는다.
+      if (uploadUri && /^https?:\/\//.test(uploadUri)) {
+        const target = `${FileSystem.cacheDirectory}search-${Date.now()}.jpg`;
+        const downloaded = await FileSystem.downloadAsync(uploadUri, target);
+        uploadUri = downloaded.uri;
+        fileName = 'photo.jpg';
+        mimeType = 'image/jpeg';
+      }
 
       formData.append('file', {
         uri: uploadUri,
@@ -202,6 +228,21 @@ export default function SearchScreen() {
     } catch {
       Alert.alert('오류', '링크를 열 수 없습니다.');
     }
+  };
+
+  // 검색 결과 카드를 터치하면 상품 정보 페이지(모달)를 띄운다.
+  const openDetail = (item: SearchResult) => {
+    router.push({
+      pathname: '/product',
+      params: {
+        id: item.id != null ? String(item.id) : '',
+        imageUrl: item.image_url ?? '',
+        brand: item.brand_name ?? '',
+        name: item.name ?? '',
+        price: item.price != null ? String(item.price) : '',
+        shopLink: item.shop_link ?? '',
+      },
+    });
   };
 
   const getValidImageUrl = (url?: string | null) => {
@@ -277,7 +318,11 @@ export default function SearchScreen() {
                 const isToggling = canBookmark && togglingIds.has(item.id as number);
 
                 return (
-                  <View key={`${item.id ?? item.name ?? 'result'}-${index}`} style={styles.resultCard}>
+                  <TouchableOpacity
+                    key={`${item.id ?? item.name ?? 'result'}-${index}`}
+                    style={styles.resultCard}
+                    activeOpacity={0.85}
+                    onPress={() => openDetail(item)}>
                     <View style={styles.resultImageWrap}>
                       <Image
                         source={{ uri: getValidImageUrl(item.image_url) }}
@@ -350,7 +395,7 @@ export default function SearchScreen() {
                         </>
                       )}
                     </View>
-                  </View>
+                  </TouchableOpacity>
                 );
               })}
 
