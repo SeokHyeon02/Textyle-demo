@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from io import BytesIO
 from urllib.parse import urljoin
 
@@ -7,6 +8,17 @@ from PIL import Image
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", ".."))
+VECTOR_SERVER_DIR = os.path.join(ROOT_DIR, "Textyle-vectorserver")
+if VECTOR_SERVER_DIR not in sys.path:
+    sys.path.insert(0, VECTOR_SERVER_DIR)
+
+from fashion_color_extraction import (
+    DENIM_COLOR_RGB_CENTROIDS,
+    FASHION_TO_FINAL_COLOR,
+    FINAL_COLOR_CATEGORIES,
+    FINAL_COLOR_RGB_CENTROIDS,
+)
 
 COLOR_DB_COLUMN = "dominant_color"
 COLOR_CONFIDENCE_DB_COLUMN = "color_confidence"
@@ -23,30 +35,8 @@ MEDIUM_COLOR_RATIO = 0.30
 BACKGROUND_COLOR_DISTANCE = 48
 MIXED_SECOND_COLOR_RATIO = 0.25
 
-COLOR_RGB_CENTROIDS = {
-    "black": (25, 25, 25),
-    "white": (235, 235, 225),
-    "gray": (125, 125, 125),
-    "navy": (20, 35, 80),
-    "blue": (40, 95, 180),
-    "indigo": (45, 70, 115),
-    "red": (175, 45, 45),
-    "green": (55, 120, 70),
-    "khaki": (95, 105, 65),
-    "yellow": (220, 190, 65),
-    "beige": (205, 180, 135),
-    "brown": (105, 70, 45),
-    "pink": (215, 120, 155),
-    "purple": (110, 70, 145),
-    "orange": (210, 115, 45),
-}
-
-DENIM_COLOR_CENTROIDS = {
-    "black": (32, 32, 35),
-    "gray": (95, 95, 100),
-    "indigo": (38, 58, 95),
-    "blue": (70, 115, 175),
-}
+COLOR_RGB_CENTROIDS = FINAL_COLOR_RGB_CENTROIDS
+DENIM_COLOR_CENTROIDS = DENIM_COLOR_RGB_CENTROIDS
 
 COLOR_KEYWORDS = {
     "black": {"black", "blk", "bk", "블랙", "검정", "검정색", "검은색", "까만색", "흑청"},
@@ -66,8 +56,8 @@ COLOR_KEYWORDS = {
         "다크 블루",
     },
     "red": {"red", "burgundy", "wine", "레드", "빨강", "빨간색", "버건디"},
-    "green": {"green", "mint", "그린", "초록", "초록색"},
-    "khaki": {"khaki", "olive", "카키", "올리브"},
+    "green": {"green", "mint", "olive", "올리브"},
+    "khaki": {"khaki", "카키"},
     "yellow": {"yellow", "mustard", "옐로우", "노랑", "노란색"},
     "beige": {"beige", "cream", "sand", "oatmeal", "베이지", "크림", "샌드", "오트밀"},
     "brown": {"brown", "camel", "mocha", "브라운", "갈색", "카멜"},
@@ -93,6 +83,11 @@ COLOR_PRIORITY = (
     "orange",
     "yellow",
 )
+
+
+def normalize_final_color(color: str):
+    normalized = FASHION_TO_FINAL_COLOR.get(color, color)
+    return normalized if normalized in FINAL_COLOR_CATEGORIES else None
 
 
 def build_image_request_headers(url: str):
@@ -204,7 +199,9 @@ def find_color_matches_in_text(text: str):
     for color in COLOR_PRIORITY:
         for keyword in COLOR_KEYWORDS.get(color, set()):
             if keyword_matches_product_name(keyword, spaced_name, compact_name):
-                matched_colors.append(color)
+                final_color = normalize_final_color(color)
+                if final_color:
+                    matched_colors.append(final_color)
                 break
     return matched_colors
 

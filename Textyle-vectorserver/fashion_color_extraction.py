@@ -62,21 +62,21 @@ PATTERN_CONTEXT_TERMS = (
 # ---------------------------------------------------------------------------
 
 COLOR_CENTROIDS = {
-    "black": (30, 30, 32),
-    "white": (235, 235, 225),
-    "gray": (125, 125, 125),
-    "navy": (22, 34, 72),
-    "blue": (45, 100, 185),
-    "indigo": (38, 58, 95),
-    "red": (175, 45, 45),
-    "green": (55, 120, 70),
-    "khaki": (105, 110, 70),
-    "yellow": (220, 190, 65),
-    "beige": (205, 180, 135),
-    "brown": (105, 70, 45),
-    "pink": (215, 120, 155),
-    "purple": (110, 70, 145),
-    "orange": (210, 115, 45),
+    "black": (0, 0, 0),
+    "white": (255, 255, 255),
+    "gray": (128, 128, 128),
+    "navy": (0, 0, 128),
+    "blue": (0, 0, 255),
+    "indigo": (75, 0, 130),
+    "red": (255, 0, 0),
+    "green": (0, 128, 0),
+    "khaki": (240, 230, 140),
+    "yellow": (255, 255, 0),
+    "beige": (245, 245, 220),
+    "brown": (165, 42, 42),
+    "pink": (255, 192, 203),
+    "purple": (128, 0, 128),
+    "orange": (255, 165, 0),
 }
 
 FINAL_COLOR_CATEGORIES = {
@@ -93,7 +93,7 @@ FASHION_TO_FINAL_COLOR = {
     "indigo": "blue",
     "red": "red",
     "green": "green",
-    "khaki": "green",
+    "khaki": "yellow",
     "yellow": "yellow",
     "beige": "white",
     "brown": "brown",
@@ -170,7 +170,7 @@ NAMED_COLOR_TO_FASHION_COLOR = {
     "navy": "blue", "midnightblue": "blue", "darkblue": "blue",
     "mediumblue": "blue", "blue": "blue", "royalblue": "blue",
     "dodgerblue": "blue", "cornflowerblue": "blue", "indigo": "blue",
-    "khaki": "green", "darkkhaki": "green", "olive": "green",
+    "khaki": "yellow", "darkkhaki": "yellow", "olive": "green",
     "olivedrab": "green", "darkolivegreen": "green",
     "tan": "brown", "wheat": "brown", "burlywood": "brown",
     "bisque": "brown", "navajowhite": "brown", "blanchedalmond": "brown",
@@ -305,8 +305,169 @@ def rgb_stddev(rgb: tuple) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Named colour matching (PIL ImageColor palette)
+# Named colour matching (hard-coded CSS table)
 # ---------------------------------------------------------------------------
+
+CSS_NAMED_COLOR_HEX = {
+    "white": "#FFFFFF",
+    "snow": "#FFFAFA",
+    "honeydew": "#F0FFF0",
+    "mintcream": "#F5FFFA",
+    "azure": "#F0FFFF",
+    "aliceblue": "#F0F8FF",
+    "ghostwhite": "#F8F8FF",
+    "whitesmoke": "#F5F5F5",
+    "seashell": "#FFF5EE",
+    "beige": "#F5F5DC",
+    "oldlace": "#FDF5E6",
+    "floralwhite": "#FFFAF0",
+    "ivory": "#FFFFF0",
+    "antiquewhite": "#FAEBD7",
+    "linen": "#FAF0E6",
+    "lavenderblush": "#FFF0F5",
+    "mistyrose": "#FFE4E1",
+    "gray": "#808080",
+    "gainsboro": "#DCDCDC",
+    "lightgray": "#D3D3D3",
+    "silver": "#C0C0C0",
+    "darkgray": "#A9A9A9",
+    "dimgray": "#696969",
+    "lightslategray": "#778899",
+    "slategray": "#708090",
+    "darkslategray": "#2F4F4F",
+    "black": "#000000",
+    "red": "#FF0000",
+    "lightsalmon": "#FFA07A",
+    "salmon": "#FA8072",
+    "darksalmon": "#E9967A",
+    "lightcoral": "#F08080",
+    "indianred": "#CD5C5C",
+    "crimson": "#DC143C",
+    "firebrick": "#B22222",
+    "darkred": "#8B0000",
+    "pink": "#FFC0CB",
+    "lightpink": "#FFB6C1",
+    "hotpink": "#FF69B4",
+    "deeppink": "#FF1493",
+    "palevioletred": "#DB7093",
+    "mediumvioletred": "#C71585",
+    "orange": "#FFA500",
+    "darkorange": "#FF8C00",
+    "coral": "#FF7F50",
+    "tomato": "#FF6347",
+    "orangered": "#FF4500",
+    "yellow": "#FFFF00",
+    "lightyellow": "#FFFFE0",
+    "lemonchiffon": "#FFFACD",
+    "lightgoldenrodyellow": "#FAFAD2",
+    "papayawhip": "#FFEFD5",
+    "moccasin": "#FFE4B5",
+    "peachpuff": "#FFDAB9",
+    "palegoldenrod": "#EEE8AA",
+    "khaki": "#F0E68C",
+    "darkkhaki": "#BDB76B",
+    "gold": "#FFD700",
+    "brown": "#A52A2A",
+    "cornsilk": "#FFF8DC",
+    "blanchedalmond": "#FFEBCD",
+    "bisque": "#FFE4C4",
+    "navajowhite": "#FFDEAD",
+    "wheat": "#F5DEB3",
+    "burlywood": "#DEB887",
+    "tan": "#D2B48C",
+    "rosybrown": "#BC8F8F",
+    "sandybrown": "#F4A460",
+    "goldenrod": "#DAA520",
+    "darkgoldenrod": "#B8860B",
+    "peru": "#CD853F",
+    "chocolate": "#D2691E",
+    "saddlebrown": "#8B4513",
+    "sienna": "#A0522D",
+    "maroon": "#800000",
+    "green": "#008000",
+    "palegreen": "#98FB98",
+    "lightgreen": "#90EE90",
+    "yellowgreen": "#9ACD32",
+    "greenyellow": "#ADFF2F",
+    "chartreuse": "#7FFF00",
+    "lawngreen": "#7CFC00",
+    "lime": "#00FF00",
+    "limegreen": "#32CD32",
+    "mediumspringgreen": "#00FA9A",
+    "springgreen": "#00FF7F",
+    "mediumaquamarine": "#66CDAA",
+    "aquamarine": "#7FFFD4",
+    "lightseagreen": "#20B2AA",
+    "mediumseagreen": "#3CB371",
+    "seagreen": "#2E8B57",
+    "darkseagreen": "#8FBC8F",
+    "forestgreen": "#228B22",
+    "darkgreen": "#006400",
+    "olivedrab": "#6B8E23",
+    "olive": "#808000",
+    "darkolivegreen": "#556B2F",
+    "teal": "#008080",
+    "blue": "#0000FF",
+    "lightblue": "#ADD8E6",
+    "powderblue": "#B0E0E6",
+    "paleturquoise": "#AFEEEE",
+    "turquoise": "#40E0D0",
+    "mediumturquoise": "#48D1CC",
+    "darkturquoise": "#00CED1",
+    "lightcyan": "#E0FFFF",
+    "cyan": "#00FFFF",
+    "aqua": "#00FFFF",
+    "darkcyan": "#008B8B",
+    "cadetblue": "#5F9EA0",
+    "lightsteelblue": "#B0C4DE",
+    "steelblue": "#4682B4",
+    "lightskyblue": "#87CEFA",
+    "skyblue": "#87CEEB",
+    "deepskyblue": "#00BFFF",
+    "dodgerblue": "#1E90FF",
+    "cornflowerblue": "#6495ED",
+    "royalblue": "#4169E1",
+    "mediumblue": "#0000CD",
+    "darkblue": "#00008B",
+    "navy": "#000080",
+    "midnightblue": "#191970",
+    "purple": "#800080",
+    "lavender": "#E6E6FA",
+    "thistle": "#D8BFD8",
+    "plum": "#DDA0DD",
+    "violet": "#EE82EE",
+    "orchid": "#DA70D6",
+    "fuchsia": "#FF00FF",
+    "magenta": "#FF00FF",
+    "mediumorchid": "#BA55D3",
+    "mediumpurple": "#9370DB",
+    "amethyst": "#9966CC",
+    "blueviolet": "#8A2BE2",
+    "darkviolet": "#9400D3",
+    "darkorchid": "#9932CC",
+    "darkmagenta": "#8B008B",
+    "slateblue": "#6A5ACD",
+    "darkslateblue": "#483D8B",
+    "mediumslateblue": "#7B68EE",
+    "indigo": "#4B0082",
+}
+
+
+def css_named_rgb(name: str) -> tuple[int, int, int]:
+    """Return the hard-coded CSS table RGB for a named color."""
+    return ImageColor.getrgb(CSS_NAMED_COLOR_HEX[name])
+
+
+FINAL_COLOR_RGB_CENTROIDS = {
+    color: css_named_rgb(color)
+    for color in FINAL_COLOR_CATEGORIES
+}
+
+DENIM_COLOR_RGB_CENTROIDS = {
+    "black": css_named_rgb("black"),
+    "gray": css_named_rgb("gray"),
+    "blue": css_named_rgb("blue"),
+}
 
 _NAMED_COLOR_PALETTE_CACHE: list[tuple[str, str, tuple]] | None = None
 
@@ -316,9 +477,9 @@ def _named_color_palette() -> list[tuple[str, str, tuple]]:
     if _NAMED_COLOR_PALETTE_CACHE is not None:
         return _NAMED_COLOR_PALETTE_CACHE
     palette = []
-    for name, value in ImageColor.colormap.items():
+    for name, value in CSS_NAMED_COLOR_HEX.items():
         try:
-            rgb = tuple(value[:3]) if isinstance(value, tuple) else ImageColor.getrgb(value)
+            rgb = ImageColor.getrgb(value)
         except (TypeError, ValueError):
             continue
         palette.append((name, named_color_group(name), rgb))
@@ -497,9 +658,10 @@ def hinted_chromatic_neutral_color(rgb: tuple, color_hint: str) -> tuple[str, st
     if color_hint == "green" and (
         _is_olive_leaning_neutral_rgb(rgb)
         or _is_muted_green_rgb(rgb)
-        or _is_sage_khaki_rgb(rgb)
     ):
         return "green", "hint_green_neutral"
+    if color_hint == "yellow" and _is_sage_khaki_rgb(rgb):
+        return "yellow", "hint_yellow_khaki_neutral"
     if color_hint == "brown" and (
         _is_warm_leaning_neutral_rgb(rgb)
         or _is_dark_brown_rgb(rgb)
@@ -548,6 +710,8 @@ def reinterpret_fashion_color(
         return "brown", "rgb_dark_brown_neutral"
     if _is_light_warm_neutral_white_rgb(rgb):
         return "white", "rgb_warm_light_neutral"
+    if _is_sage_khaki_rgb(rgb):
+        return "yellow", "rgb_khaki_neutral"
     if _is_olive_leaning_neutral_rgb(rgb):
         return "green", "rgb_olive_neutral"
     return default_color, "named_color"
@@ -582,7 +746,7 @@ def nearest_color(rgb: tuple) -> str:
     if _is_muted_green_rgb(rgb):
         return "green"
     if _is_sage_khaki_rgb(rgb):
-        return "green"
+        return "yellow"
     if _is_dark_brown_rgb(rgb):
         return "brown"
     if _is_light_warm_neutral_white_rgb(rgb):

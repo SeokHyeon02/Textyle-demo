@@ -95,10 +95,13 @@ Textyle은 사용자가 업로드한 의류 이미지와 한국어 검색 문장
 
 - GroundingDINO로 의류 객체 bbox를 찾습니다.
 - SAM에 bbox prompt를 전달해 여러 mask 후보를 생성합니다.
-- SAM 후보 mask를 색상 힌트, mask 크기, 배경 가능성 기준으로 ranking합니다.
-- mask 내부 픽셀에서 k-means 색상 후보를 만들고, 148개 named color 기준 세부색도 함께 저장합니다.
+- SAM 후보 mask를 mask 크기, 배경 가능성, 색상 후보 신뢰도 기준으로 ranking합니다.
+- mask 내부 픽셀에서 k-means 색상 후보를 만들고, CSS named color 기준 세부색도 함께 저장합니다.
 - 최종 검색 색상은 `white, black, red, yellow, green, blue, purple, gray, orange, brown, pink` 11개로 정리합니다.
-- 제품명 색상 힌트가 있으면 최종 검색색 결정에 우선 반영합니다.
+- 자동 RGB 추출은 조명, 워싱, 원단 반사에 민감하므로 수동 검수 컬럼을 별도로 관리합니다.
+- `manual_final_color`는 사람이 확정한 11색 최종 색상이고, 데님 검색에서는 `dominant_color`보다 우선합니다.
+- `manual_detail_color`는 사람이 확인한 세부 색상 라벨입니다. 현재는 기록/후보 세부색으로 사용하며, 한글 라벨을 영어 named color로 자동 변환하지는 않습니다.
+- `denim_tone`은 데님팬츠 전용 톤 컬럼이며 `light, medium, dark, black, gray, raw` 또는 비데님/애매한 데님용 빈 값을 허용합니다.
 - 체크, 스트라이프, 카모 등 패턴은 색상 추출과 분리하고 ViT 패턴 분류 대상으로 표시합니다.
 
 검증 스크립트는 다음 위치에 있습니다.
@@ -132,7 +135,28 @@ python .\update\update_groundingdino_sam_colors.py --ids 6260 7195 7058 4397 --a
 
 ## 👖 FashionCLIP 데님 검색 실험
 
-데님팬츠 검색은 FashionCLIP 이미지 임베딩만으로는 연청, 중청, 진청, 흑청처럼 색상 톤이 가까운 후보를 안정적으로 구분하기 어려워 별도 실험 흐름으로 관리합니다. 현재 서버는 데님 문맥에서 이미지 색상 후보, named color, 제품명 기반 톤 힌트, Supabase 후보 재정렬 점수를 함께 사용합니다.
+데님팬츠 검색은 FashionCLIP 이미지 임베딩만으로는 연청, 중청, 진청, 흑청처럼 색상 톤이 가까운 후보를 안정적으로 구분하기 어려워 별도 실험 흐름으로 관리합니다. 현재 서버는 데님 문맥에서 이미지 색상 후보, named color, 수동 색상 컬럼, `denim_tone`, Supabase 후보 재정렬 점수를 함께 사용합니다.
+
+현재 검색 정책은 다음과 같습니다.
+
+- DB의 `fashion_embedding`은 상품 이미지 임베딩입니다.
+- 검색 시 업로드 이미지 임베딩과 텍스트 query 임베딩을 조합해 Supabase RPC `match_clothes_fashion`으로 1차 후보를 가져옵니다.
+- 1차 후보는 서버에서 다시 재정렬합니다. 재정렬에는 카테고리, 색상 후보, `denim_tone`, 수동 색상 컬럼, named color 거리, FashionCLIP similarity가 사용됩니다.
+- 데님팬츠 문맥에서 RPC 결과에 `manual_final_color`가 있으면 후보의 대표 색상으로 우선 사용합니다. 없으면 `dominant_color`, `color_candidates` 순서로 fallback합니다.
+- 데님팬츠 문맥에서 RPC 결과에 `manual_detail_color`가 있으면 수동 후보의 `named_color`로 사용합니다. 단, 한글 세부색 라벨은 현재 영어 CSS named color로 자동 변환하지 않습니다.
+- `denim_tone`은 데님 색상 검색에서 `manual_final_color`와 별도로 쓰는 톤 축입니다. 최종 11색이 같아도 `light, medium, dark, black, gray, raw`에 따라 랭킹이 달라질 수 있습니다.
+- 후보 제품명에 `wide`, `straight` 같은 핏 단어가 있다고 해서 디자인 보너스를 주지 않습니다. 별도 `fit_type`, `fit`, `silhouette`, `pants_fit`, `length_type`, `design_details` 같은 후보 메타데이터가 있을 때만 디자인 보너스를 적용합니다.
+- `중청` 같은 데님 톤 쿼리는 FashionCLIP 텍스트 프롬프트에서 `medium blue denim jeans`처럼 자연스러운 영어 표현으로 정규화합니다.
+
+RPC가 데님 수동 색상을 검색에 반영하려면 결과 row에 최소한 다음 컬럼을 포함해야 합니다.
+
+```text
+manual_final_color
+manual_detail_color
+denim_tone
+dominant_color
+color_candidates
+```
 
 상세 실험 내용과 폐기한 보조 스크립트는 `FASHIONCLIP_DENIM_SEARCH_EXPERIMENTS.md`에 정리되어 있습니다. 현재 기준으로 `DB_data/test/check_product_name_color_hint.py`와 `DB_data/update/export_denim_pants_rows.py`는 임시 검증용 스크립트였으므로 저장소에서 제거했습니다.
 

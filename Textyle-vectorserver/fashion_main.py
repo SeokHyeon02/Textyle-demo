@@ -1,4 +1,5 @@
 import io
+import time
 import importlib
 import json
 import os
@@ -28,6 +29,10 @@ from pydantic import BaseModel, Field
 from supabase import Client, create_client
 from transformers import CLIPModel, CLIPProcessor
 from fashion_color_extraction import (
+    DENIM_COLOR_RGB_CENTROIDS,
+    FINAL_COLOR_RGB_CENTROIDS,
+    CSS_NAMED_COLOR_HEX,
+    css_named_rgb,
     extract_dominant_color_result as extract_dominant_color_result_v2,
     is_denim_context_from_text,
     lab_distance as named_lab_distance,
@@ -78,6 +83,10 @@ model = CLIPModel.from_pretrained(FASHION_CLIP_MODEL_ID).to(device)
 processor = CLIPProcessor.from_pretrained(FASHION_CLIP_MODEL_ID)
 model.eval()
 print("FashionCLIP loaded")
+
+
+def elapsed_ms(start_time: float, end_time: float | None = None) -> float:
+    return round(((end_time or time.perf_counter()) - start_time) * 1000, 1)
 
 
 class QueryIntent(BaseModel):
@@ -218,8 +227,8 @@ COLOR_ALIASES = {
     "gray": {"gray", "grey", "그레이", "회색", "차콜", "charcoal"},
     "blue": {"blue", "블루", "파랑", "파란", "파란색", "청색", "중청", "연청", "navy", "네이비", "남색", "indigo", "인디고", "생지", "진청", "raw denim", "dark denim", "dark blue", "다크블루"},
     "red": {"red", "레드", "빨강", "빨간색", "버건디", "burgundy", "와인"},
-    "green": {"green", "그린", "초록", "초록색", "khaki", "카키", "olive", "올리브", "sage", "세이지"},
-    "yellow": {"yellow", "옐로우", "노랑", "노란색"},
+    "green": {"green", "그린", "초록", "초록색", "olive", "올리브", "sage", "세이지"},
+    "yellow": {"yellow", "옐로우", "노랑", "노란색", "khaki", "카키"},
     "brown": {"brown", "브라운", "갈색", "카멜", "camel"},
     "pink": {"pink", "핑크", "분홍", "분홍색"},
     "purple": {"purple", "퍼플", "보라", "보라색"},
@@ -677,11 +686,7 @@ def design_detail_score(item, query_attrs) -> tuple[float, list[str], list[str]]
     if not query_details:
         return 0.0, [], []
 
-    candidate_text = " ".join(
-        str(item.get(field) or "")
-        for field in ("name", "brand_name", "main_category", "sub_category")
-    )
-    candidate_details = infer_design_details(candidate_text)
+    candidate_details = candidate_design_details(item)
     if not candidate_details:
         return 0.0, [], []
 
@@ -700,6 +705,28 @@ def design_detail_score(item, query_attrs) -> tuple[float, list[str], list[str]]
         score -= min(0.18, 0.10 + (0.04 * (len(set(conflicts)) - 1)))
 
     return score, matched, sorted(set(conflicts))
+
+
+def candidate_design_details(item) -> set[str]:
+    details = set()
+    raw_details = item.get("design_details")
+    if isinstance(raw_details, str):
+        try:
+            raw_details = json.loads(raw_details)
+        except json.JSONDecodeError:
+            raw_details = [raw_details]
+    if isinstance(raw_details, list):
+        for detail in raw_details:
+            normalized = normalize_text(detail)
+            if normalized:
+                details.add(normalized)
+
+    metadata_text = " ".join(
+        str(item.get(field) or "")
+        for field in ("fit_type", "fit", "silhouette", "pants_fit", "length_type")
+    )
+    details.update(infer_design_details(metadata_text))
+    return details
 
 
 def color_matches_target(item_color: str, target_color: str, query_attrs=None) -> bool:
@@ -852,6 +879,21 @@ BLACK_DENIM_TONE_TERMS = {
 }
 
 
+WASHED_BLACK_DENIM_TONE_TERMS = {
+    "washed black",
+    "washedblack",
+    "black wash",
+    "black washed",
+    "faded black",
+    "vintage black",
+    "\uc6cc\uc2f1 \ube14\ub799",
+    "\ube14\ub799 \uc6cc\uc2f1",
+    "\uc6cc\uc2dc\ub4dc \ube14\ub799",
+    "\ud398\uc774\ub4dc \ube14\ub799",
+    "\ube48\ud2f0\uc9c0 \ube14\ub799",
+}
+
+
 INDIGO_DENIM_TONE_TERMS = {
     "raw denim",
     "rawdenim",
@@ -868,6 +910,74 @@ INDIGO_DENIM_TONE_TERMS = {
 }
 
 
+BROWN_DENIM_TONE_TERMS = {
+    "brown denim",
+    "brown jeans",
+    "camel denim",
+    "camel jeans",
+    "brown",
+    "camel",
+    "브라운 데님",
+    "브라운 청바지",
+    "브라운 팬츠",
+    "브라운",
+    "카멜 데님",
+    "카멜 청바지",
+    "카멜",
+}
+
+
+BEIGE_DENIM_TONE_TERMS = {
+    "beige denim",
+    "beige jeans",
+    "sand denim",
+    "sand jeans",
+    "oatmeal denim",
+    "oatmeal jeans",
+    "ivory denim",
+    "beige",
+    "sand",
+    "oatmeal",
+    "ivory",
+    "베이지 데님",
+    "베이지 청바지",
+    "베이지",
+    "샌드 데님",
+    "샌드 청바지",
+    "샌드",
+    "오트밀 데님",
+    "오트밀 청바지",
+    "오트밀",
+    "아이보리 데님",
+    "아이보리",
+}
+
+
+BLUE_GRAY_DENIM_TONE_TERMS = {
+    "blue gray",
+    "bluegray",
+    "gray blue",
+    "grey blue",
+    "slate blue",
+    "washed blue gray",
+    "회청",
+    "회청색",
+    "그레이 블루",
+    "블루 그레이",
+}
+
+
+WASHED_GRAY_DENIM_TONE_TERMS = {
+    "washed gray",
+    "washed grey",
+    "gray wash",
+    "grey wash",
+    "워시드 그레이",
+    "그레이 워싱",
+    "워싱 그레이",
+}
+
+
 def denim_tone_from_reason(reason: str) -> str:
     reason = normalize_text(reason)
     if "denim_context_light" in reason:
@@ -876,6 +986,16 @@ def denim_tone_from_reason(reason: str) -> str:
         return "dark"
     if "denim_context_medium" in reason:
         return "medium"
+    if "denim_context_blue_gray" in reason:
+        return "blue_gray"
+    if "denim_context_washed_gray" in reason:
+        return "washed_gray"
+    if "denim_context_washed_black" in reason:
+        return "washed_black"
+    if "denim_context_brown" in reason:
+        return "brown"
+    if "denim_context_beige" in reason:
+        return "beige"
     return ""
 
 
@@ -885,6 +1005,11 @@ def infer_denim_tone_from_text(text: str) -> str:
     for tone, terms in KOREAN_DENIM_TONE_OVERRIDES:
         if any(term in normalized or term in compact for term in terms):
             return tone
+    for term in WASHED_BLACK_DENIM_TONE_TERMS:
+        term_text = normalize_text(term)
+        term_compact = re.sub(r"[^a-z0-9가-힣]+", "", term_text)
+        if term_text in normalized or (term_compact and term_compact in compact):
+            return "washed_black"
     for term in BLACK_DENIM_TONE_TERMS:
         term_text = normalize_text(term)
         term_compact = re.sub(r"[^a-z0-9가-힣]+", "", term_text)
@@ -895,6 +1020,26 @@ def infer_denim_tone_from_text(text: str) -> str:
         term_compact = re.sub(r"[^a-z0-9가-힣]+", "", term_text)
         if term_text in normalized or (term_compact and term_compact in compact):
             return "indigo"
+    for term in BROWN_DENIM_TONE_TERMS:
+        term_text = normalize_text(term)
+        term_compact = re.sub(r"[^a-z0-9가-힣]+", "", term_text)
+        if term_text in normalized or (term_compact and term_compact in compact):
+            return "brown"
+    for term in BEIGE_DENIM_TONE_TERMS:
+        term_text = normalize_text(term)
+        term_compact = re.sub(r"[^a-z0-9가-힣]+", "", term_text)
+        if term_text in normalized or (term_compact and term_compact in compact):
+            return "beige"
+    for term in BLUE_GRAY_DENIM_TONE_TERMS:
+        term_text = normalize_text(term)
+        term_compact = re.sub(r"[^a-z0-9가-힣]+", "", term_text)
+        if term_text in normalized or (term_compact and term_compact in compact):
+            return "blue_gray"
+    for term in WASHED_GRAY_DENIM_TONE_TERMS:
+        term_text = normalize_text(term)
+        term_compact = re.sub(r"[^a-z0-9가-힣]+", "", term_text)
+        if term_text in normalized or (term_compact and term_compact in compact):
+            return "washed_gray"
     for term in DARK_BLUE_DENIM_TONE_TERMS:
         term_text = normalize_text(term)
         term_compact = re.sub(r"[^a-z0-9가-힣]+", "", term_text)
@@ -926,7 +1071,11 @@ NEW_DENIM_TONES = {
     "black",
     "indigo",
     "gray",
+    "blue_gray",
+    "washed_gray",
+    "washed_black",
     "brown",
+    "beige",
 }
 
 
@@ -940,6 +1089,14 @@ def normalize_candidate_denim_tone(value: str) -> str:
         "medium blue": "mid_blue",
         "darkblue": "dark_blue",
         "dark blue": "dark_blue",
+        "bluegray": "blue_gray",
+        "blue gray": "blue_gray",
+        "grayblue": "blue_gray",
+        "gray blue": "blue_gray",
+        "washedgray": "washed_gray",
+        "washed gray": "washed_gray",
+        "washedblack": "washed_black",
+        "washed black": "washed_black",
     }
     tone = aliases.get(tone, tone)
     return tone if tone in NEW_DENIM_TONES or tone in {"light", "medium", "dark"} else ""
@@ -1020,7 +1177,7 @@ def get_candidate_denim_tone(item) -> str:
     stored_tone = normalize_candidate_denim_tone(item.get("denim_tone") or "")
     candidate_text = " ".join(
         str(item.get(field) or "")
-        for field in ("name", "brand_name", "sub_category")
+        for field in ("name", "brand_name", "sub_category", "musinsa_color_label", "source_color_label")
     )
     if stored_tone == "indigo":
         name_modifier_tone = candidate_indigo_name_modifier_tone(candidate_text)
@@ -1046,7 +1203,7 @@ def denim_tone_adjustment(item, query_attrs, color_mode: str) -> tuple[float, st
     if color_mode != "same" and not (explicit_text_tone and color_mode in {"target", "ignore"}):
         return 0.0, ""
     target_tone = query_attrs.get("denim_tone") or ""
-    if target_tone not in {"dark", "light", "medium", "dark_blue", "black", "indigo"}:
+    if target_tone not in {"dark", "light", "medium", "dark_blue", "black", "washed_black", "indigo", "brown", "beige", "blue_gray", "washed_gray"}:
         return 0.0, ""
 
     tone_scale = 1.0 if color_mode == "same" else 0.85
@@ -1054,26 +1211,76 @@ def denim_tone_adjustment(item, query_attrs, color_mode: str) -> tuple[float, st
     if not candidate_tone:
         return 0.0, ""
 
-    if target_tone == "dark":
-        if normalize_color(query_attrs.get("color")) == "gray" and candidate_tone in {"black", "dark_blue", "indigo", "dark"}:
-            return 0.0, candidate_tone
+    if target_tone == "brown":
+        if candidate_tone == "brown":
+            return 0.20 * tone_scale, candidate_tone
+        if candidate_tone == "beige":
+            return 0.06 * tone_scale, candidate_tone
+        if candidate_tone in {"light_blue", "mid_blue", "medium", "dark_blue", "indigo", "black", "gray", "blue_gray", "washed_gray", "dark", "light", "white"}:
+            return -0.12 * tone_scale, candidate_tone
+
+    if target_tone == "beige":
+        if candidate_tone == "beige":
+            return 0.20 * tone_scale, candidate_tone
+        if candidate_tone == "brown":
+            return 0.04 * tone_scale, candidate_tone
         if candidate_tone in {"black", "dark_blue", "indigo", "dark"}:
+            return -0.14 * tone_scale, candidate_tone
+        if candidate_tone in {"mid_blue", "medium", "light_blue", "light", "gray", "blue_gray", "washed_gray"}:
+            return -0.08 * tone_scale, candidate_tone
+
+    if target_tone == "blue_gray":
+        if candidate_tone == "blue_gray":
+            return 0.18 * tone_scale, candidate_tone
+        if candidate_tone in {"mid_blue", "gray", "washed_gray"}:
+            return 0.04 * tone_scale, candidate_tone
+        if candidate_tone in {"black", "indigo", "dark_blue", "brown", "beige"}:
+            return -0.08 * tone_scale, candidate_tone
+
+    if target_tone == "washed_gray":
+        if candidate_tone == "washed_gray":
+            return 0.18 * tone_scale, candidate_tone
+        if candidate_tone in {"gray", "blue_gray"}:
+            return 0.05 * tone_scale, candidate_tone
+        if candidate_tone in {"black", "washed_black", "indigo", "dark_blue", "brown", "beige"}:
+            return -0.08 * tone_scale, candidate_tone
+
+    if target_tone == "washed_black":
+        if candidate_tone == "washed_black":
+            return 0.20 * tone_scale, candidate_tone
+        if candidate_tone == "black":
+            return 0.06 * tone_scale, candidate_tone
+        if candidate_tone in {"gray", "washed_gray"}:
+            return 0.03 * tone_scale, candidate_tone
+        if candidate_tone in {"light_blue", "mid_blue", "medium", "dark_blue", "indigo", "brown", "beige", "light", "white"}:
+            return -0.10 * tone_scale, candidate_tone
+
+    if target_tone == "dark":
+        if (
+            normalize_color(query_attrs.get("color")) == "gray"
+            and normalize_text(query_attrs.get("color_source")) == "explicit_text"
+            and candidate_tone in {"black", "washed_black", "dark_blue", "indigo", "dark"}
+        ):
+            return 0.0, candidate_tone
+        if candidate_tone in {"black", "washed_black", "dark_blue", "indigo", "dark"}:
             return 0.18 * tone_scale, candidate_tone
         if candidate_tone == "gray":
             return 0.0, candidate_tone
         if candidate_tone == "mid_blue":
             return -0.06 * tone_scale, candidate_tone
-        if candidate_tone in {"light_blue", "light", "white", "brown"}:
+        if candidate_tone in {"light_blue", "light", "white", "brown", "beige"}:
             return -0.15 * tone_scale, candidate_tone
 
     if target_tone == "black":
         if candidate_tone == "black":
             return 0.22 * tone_scale, candidate_tone
+        if candidate_tone == "washed_black":
+            return 0.08 * tone_scale, candidate_tone
         if candidate_tone in {"dark_blue", "indigo", "dark"}:
             return -0.05 * tone_scale, candidate_tone
         if candidate_tone == "gray":
             return -0.06 * tone_scale, candidate_tone
-        if candidate_tone in {"mid_blue", "medium", "light_blue", "light", "white", "brown"}:
+        if candidate_tone in {"mid_blue", "medium", "light_blue", "light", "white", "brown", "beige"}:
             return -0.15 * tone_scale, candidate_tone
 
     if target_tone == "indigo":
@@ -1081,11 +1288,11 @@ def denim_tone_adjustment(item, query_attrs, color_mode: str) -> tuple[float, st
             return 0.18 * tone_scale, candidate_tone
         if candidate_tone in {"dark_blue", "dark"}:
             return 0.08 * tone_scale, candidate_tone
-        if candidate_tone == "black":
+        if candidate_tone in {"black", "washed_black"}:
             return -0.04 * tone_scale, candidate_tone
         if candidate_tone == "mid_blue":
             return -0.03 * tone_scale, candidate_tone
-        if candidate_tone in {"light_blue", "light", "white", "gray", "brown"}:
+        if candidate_tone in {"light_blue", "light", "white", "gray", "brown", "beige", "washed_gray"}:
             return -0.12 * tone_scale, candidate_tone
 
     if target_tone == "dark_blue":
@@ -1095,9 +1302,9 @@ def denim_tone_adjustment(item, query_attrs, color_mode: str) -> tuple[float, st
             return 0.06 * tone_scale, candidate_tone
         if candidate_tone in {"mid_blue", "medium"}:
             return -0.03 * tone_scale, candidate_tone
-        if candidate_tone == "black":
+        if candidate_tone in {"black", "washed_black"}:
             return -0.10 * tone_scale, candidate_tone
-        if candidate_tone in {"light_blue", "light", "white", "gray", "brown"}:
+        if candidate_tone in {"light_blue", "light", "white", "gray", "brown", "beige", "washed_gray"}:
             return -0.16 * tone_scale, candidate_tone
 
     if target_tone == "light":
@@ -1107,9 +1314,9 @@ def denim_tone_adjustment(item, query_attrs, color_mode: str) -> tuple[float, st
             return 0.04 * tone_scale, candidate_tone
         if candidate_tone == "mid_blue":
             return -0.03 * tone_scale, candidate_tone
-        if candidate_tone in {"dark_blue", "black", "indigo", "dark"}:
+        if candidate_tone in {"dark_blue", "black", "washed_black", "indigo", "dark"}:
             return -0.24 * tone_scale, candidate_tone
-        if candidate_tone in {"gray", "brown"}:
+        if candidate_tone in {"gray", "brown", "beige", "washed_gray"}:
             return -0.08 * tone_scale, candidate_tone
 
     if target_tone == "medium":
@@ -1119,7 +1326,7 @@ def denim_tone_adjustment(item, query_attrs, color_mode: str) -> tuple[float, st
             return -0.12 * tone_scale, candidate_tone
         if candidate_tone in {"light", "light_blue"}:
             return -0.08 * tone_scale, candidate_tone
-        if candidate_tone in {"dark", "dark_blue", "black"}:
+        if candidate_tone in {"dark", "dark_blue", "black", "washed_black"}:
             return -0.12 * tone_scale, candidate_tone
 
     if candidate_tone == target_tone:
@@ -1167,6 +1374,45 @@ def normalize_color_candidates(item) -> list[dict]:
         seen_colors.add(color)
 
     return sorted(normalized_candidates, key=lambda candidate: candidate["score"], reverse=True)[:3]
+
+
+def manual_color_candidate(item, query_attrs) -> dict | None:
+    if not (query_attrs or {}).get("is_denim_context"):
+        return None
+    manual_color = normalize_color(item.get("manual_final_color") or item.get("manual_color"))
+    if not manual_color:
+        return None
+    candidate = {
+        "color": manual_color,
+        "score": 1.0,
+        "source": "manual",
+        "confidence": "high",
+    }
+    detail_color = normalize_text(item.get("manual_detail_color") or item.get("manual_named_color"))
+    if detail_color:
+        candidate["named_color"] = detail_color
+    return candidate
+
+
+def candidate_color_candidates(item, query_attrs) -> list[dict]:
+    candidates = normalize_color_candidates(item)
+    manual_candidate = manual_color_candidate(item, query_attrs)
+    if not manual_candidate:
+        return candidates
+
+    filtered = [
+        candidate
+        for candidate in candidates
+        if candidate.get("color") != manual_candidate["color"]
+    ]
+    return [manual_candidate, *filtered][:3]
+
+
+def candidate_item_color(item, query_attrs) -> str:
+    manual_candidate = manual_color_candidate(item, query_attrs)
+    if manual_candidate:
+        return manual_candidate["color"]
+    return normalize_color(item.get("dominant_color") or item.get("color"))
 
 
 def parse_rgb(value) -> tuple[int, int, int] | None:
@@ -1301,6 +1547,69 @@ def compact_prompt(*parts) -> str:
     return " ".join(str(part).strip() for part in parts if str(part or "").strip())
 
 
+def denim_tone_prompt(tone: str, color_prompt: str) -> str:
+    color_prompt = normalize_text(color_prompt)
+    tone = normalize_candidate_denim_tone(tone)
+    if tone in {"light", "light_blue"}:
+        return compact_prompt("light", color_prompt or "blue")
+    if tone in {"medium", "mid_blue"}:
+        return compact_prompt("medium", color_prompt or "blue")
+    if tone == "dark_blue":
+        return "dark blue"
+    if tone == "dark":
+        return compact_prompt("dark", color_prompt or "blue")
+    if tone == "washed_black":
+        return "washed black"
+    if tone == "black":
+        return "black"
+    if tone == "blue_gray":
+        return "blue gray"
+    if tone == "washed_gray":
+        return "washed gray"
+    if tone == "gray":
+        return "gray"
+    if tone == "indigo":
+        return "raw indigo"
+    return color_prompt
+
+
+def remove_denim_tone_words(design: str, tone: str) -> str:
+    normalized = normalize_text(design)
+    if not normalized or not tone:
+        return normalized
+
+    terms_by_tone = {
+        "light": ("light wash", "light washed", "light blue", "lightblue", "light"),
+        "light_blue": ("light wash", "light washed", "light blue", "lightblue", "light"),
+        "medium": ("medium wash", "mid wash", "medium blue", "mid blue", "medium", "mid"),
+        "mid_blue": ("medium wash", "mid wash", "medium blue", "mid blue", "medium", "mid"),
+        "dark": ("dark wash", "dark washed", "dark blue", "darkblue", "dark"),
+        "dark_blue": ("dark wash", "dark washed", "dark blue", "darkblue", "dark"),
+        "black": ("black wash", "black washed", "black"),
+        "washed_black": ("washed black", "black wash", "black washed"),
+        "gray": ("gray wash", "grey wash", "gray", "grey"),
+        "washed_gray": ("washed gray", "washed grey", "gray wash", "grey wash"),
+        "blue_gray": ("blue gray", "gray blue", "blue grey", "grey blue"),
+        "indigo": ("raw denim", "raw indigo", "one wash", "one washed", "indigo", "raw"),
+    }
+    for term in terms_by_tone.get(normalize_candidate_denim_tone(tone), ()):
+        normalized = re.sub(rf"\b{re.escape(term)}\b", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def denim_enhanced_query_prompt(color_prompt: str, design: str, en_clothing_label: str) -> str:
+    label = normalize_text(en_clothing_label)
+    if "denim" not in label and "jean" not in label:
+        return compact_prompt(color_prompt, design, en_clothing_label)
+
+    tone = infer_denim_tone_from_text(design)
+    if not tone:
+        return compact_prompt(color_prompt, design, en_clothing_label)
+
+    remaining_design = remove_denim_tone_words(design, tone)
+    return compact_prompt(remaining_design, denim_tone_prompt(tone, color_prompt), en_clothing_label)
+
+
 def infer_named_color_from_text(text: str) -> tuple[str, tuple[int, int, int] | None]:
     normalized = normalize_text(text)
     compact = re.sub(r"[^a-z0-9가-힣]+", "", normalized)
@@ -1326,17 +1635,9 @@ def infer_named_color_from_text(text: str) -> tuple[str, tuple[int, int, int] | 
 
 def parse_named_rgb_seed(named_color: str) -> tuple[int, int, int]:
     named_color = normalize_text(named_color)
-    named_rgb_seeds = {
-        "lightblue": (173, 216, 230),
-        "steelblue": (70, 130, 180),
-        "royalblue": (65, 105, 225),
-        "darkblue": (0, 0, 139),
-        "navy": (0, 0, 128),
-        "midnightblue": (25, 25, 112),
-        "black": (0, 0, 0),
-        "gray": (128, 128, 128),
-    }
-    return named_rgb_seeds.get(named_color, (0, 0, 0))
+    if named_color in CSS_NAMED_COLOR_HEX:
+        return css_named_rgb(named_color)
+    return (0, 0, 0)
 
 
 def candidate_named_color_info(item, color_candidates) -> dict:
@@ -1529,7 +1830,7 @@ def dark_denim_match_type(item, candidate_named: str, candidate_tone: str, query
 def dark_denim_candidate_match(candidate_named: str, candidate_tone: str) -> bool:
     candidate_named = normalize_text(candidate_named)
     candidate_tone = normalize_text(candidate_tone)
-    return candidate_named in DENIM_DARK_NAMED_COLORS or candidate_tone in {"dark", "black", "dark_blue", "indigo"}
+    return candidate_named in DENIM_DARK_NAMED_COLORS or candidate_tone in {"dark", "black", "washed_black", "dark_blue", "indigo"}
 
 
 def dark_denim_adjustment(match_type: str) -> tuple[float, bool]:
@@ -1655,7 +1956,7 @@ def color_candidate_match_score(color_candidates, target_color: str, query_attrs
             best_score = max(best_score, candidate_score)
             exact_match = True
         elif color_group_matches_target(candidate_color, target_color, query_attrs):
-            group_weight = 0.7
+            group_weight = 0.4
             if normalize_text(candidate.get("confidence")) == "low":
                 group_weight *= 0.35
             if normalize_text(candidate.get("source")) == "family":
@@ -1672,7 +1973,7 @@ def dominant_color_match_score(item_color: str, target_color: str, query_attrs=N
     if color_matches_target(item_color, target_color, query_attrs):
         return 0.7, True, False
     if color_group_matches_target(item_color, target_color, query_attrs):
-        return 0.45, False, True
+        return 0.25, False, True
     return 0.0, False, False
 
 
@@ -1736,7 +2037,34 @@ def query_color_targets(intent: QueryIntent, query_attrs) -> dict[str, float]:
             secondary_weight = 0.25 if color_confidence == "low" else 0.35
             targets[normalized] = max(targets.get(normalized, 0.0), secondary_weight)
 
+    add_image_denim_group_targets(targets, primary_color, color_mode, query_attrs)
     return targets
+
+
+def add_image_denim_group_targets(targets: dict[str, float], primary_color: str, color_mode: str, query_attrs) -> None:
+    if (
+        color_mode != "same"
+        or not primary_color
+        or not (query_attrs or {}).get("is_denim_context")
+        or normalize_text((query_attrs or {}).get("color_source")) != "image"
+    ):
+        return
+
+    group = color_group(primary_color, query_attrs)
+    if group == "denim_dark":
+        siblings = DENIM_DARK_COLOR_GROUP
+    elif group == "denim_blue":
+        siblings = DENIM_BLUE_COLOR_GROUP
+    else:
+        return
+
+    confidence_weight = image_color_confidence_weight(query_attrs)
+    sibling_weight = min(0.45, max(0.25, confidence_weight * 0.45))
+    for color in siblings:
+        normalized = normalize_color(color)
+        if not normalized or normalized == primary_color:
+            continue
+        targets[normalized] = max(targets.get(normalized, 0.0), sibling_weight)
 
 
 def best_color_match_score(item_color, color_candidates, target_weights, query_attrs=None):
@@ -1777,7 +2105,13 @@ def image_color_confidence_weight(query_attrs) -> float:
     return 1.0
 
 
-def denim_color_adjustment_scale(candidate_tone: str, target_color: str, color_mode: str, query_attrs) -> float:
+def denim_color_adjustment_scale(
+    candidate_tone: str,
+    target_color: str,
+    color_mode: str,
+    query_attrs,
+    exact_color_matched: bool = False,
+) -> float:
     query_attrs = query_attrs or {}
     normalized_candidate_tone = normalize_candidate_denim_tone(candidate_tone)
     query_denim_tone = normalize_text(query_attrs.get("denim_tone"))
@@ -2621,7 +2955,7 @@ async def analyze_query(
     - LLM 성공 시: LLM 추론 카테고리 (normalize_llm_category 후처리)
     - LLM 실패 / gemini_client 없을 때: 룰 기반 fallback 카테고리
     """
-    # ── 룰 기반 fallback 사전 계산 ────────────────────────────────────────────
+    # 룰 기반 fallback 사전 계산
     fallback_color = infer_color_from_text(user_query)
     fallback_color_mode = infer_color_mode(user_query)
     if fallback_color and fallback_color_mode == "ignore":
@@ -2644,7 +2978,7 @@ async def analyze_query(
     if not gemini_client or genai_types is None:
         return fallback_intent, fallback_main, fallback_sub
 
-    # ── 허용 sub_category 목록 (프롬프트 힌트용) ─────────────────────────────
+    # 허용 sub_category 목록 (프롬프트 힌트용)
     _sub_cat_hint = ", ".join(sorted(_SUB_CAT_SURFACE_ALIASES.keys()))
 
     system_prompt = f"""\
@@ -2705,7 +3039,7 @@ Example:
             intent.color_mode = "target"
         intent = apply_excluded_color_phrase(user_query, intent)
 
-        # ── 카테고리 후처리 ──────────────────────────────────────────────────
+        # 카테고리 후처리
         llm_main_raw = data.get("main_category", "") or ""
         llm_sub_raw = data.get("sub_category", "") or ""
         norm_main, norm_sub = normalize_llm_category(llm_main_raw, llm_sub_raw)
@@ -3308,9 +3642,16 @@ def build_enhanced_query(
         image_weight = 0.40 if has_color_request else 0.45
     elif has_design_request and not has_color_request:
         enhanced_query = (
-            f"a photo of {query_color_prompt} {intent.design} {en_clothing_label}"
+            compact_prompt("a photo of", denim_enhanced_query_prompt(query_color_prompt, intent.design, en_clothing_label))
             if intent.color_mode == "same" and query_color_prompt
-            else compact_prompt("a photo of", intent.color if intent.color_mode == "different" else "", intent.design, en_clothing_label)
+            else compact_prompt(
+                "a photo of",
+                denim_enhanced_query_prompt(
+                    intent.color if intent.color_mode == "different" else "",
+                    intent.design,
+                    en_clothing_label,
+                ),
+            )
         )
         if intent.color_mode == "different":
             text_weight = 0.60
@@ -3323,7 +3664,10 @@ def build_enhanced_query(
             image_weight = 0.75
     else:
         color_prompt = intent.color if intent.color_mode in {"target", "different"} else ""
-        enhanced_query = compact_prompt("a photo of", color_prompt, intent.design, en_clothing_label)
+        enhanced_query = compact_prompt(
+            "a photo of",
+            denim_enhanced_query_prompt(color_prompt, intent.design, en_clothing_label),
+        )
         if intent.color_mode == "different":
             text_weight = 0.60
             image_weight = 0.40
@@ -3442,8 +3786,8 @@ def rerank_results(results, intent: QueryIntent, query_attrs, limit: int = 10):
 
     for item in results or []:
         base_similarity = float(item.get("similarity", item.get("score", 0.0)) or 0.0)
-        color_candidates = normalize_color_candidates(item)
-        item_color = normalize_color(item.get("dominant_color") or item.get("color"))
+        color_candidates = candidate_color_candidates(item, query_attrs)
+        item_color = candidate_item_color(item, query_attrs)
         display_color = item_color or (color_candidates[0]["color"] if color_candidates else "")
         has_color_signal = bool(item_color or color_candidates)
 
@@ -3554,6 +3898,7 @@ def rerank_results(results, intent: QueryIntent, query_attrs, limit: int = 10):
             matched_target_color or target_color,
             color_mode,
             query_attrs,
+            effective_color_matched,
         )
 
         final_score = (
@@ -3639,6 +3984,7 @@ def log_search_debug(
     main_categories,
     sub_categories,
     query_image_color: str,
+    color_result: ColorExtractionResult,
     color_confidence: str,
     enhanced_query: str,
     image_weight: float,
@@ -3658,6 +4004,9 @@ def log_search_debug(
     print(f"main_categories={main_categories}")
     print(f"sub_categories={sub_categories}")
     print(f"query_image_color={query_image_color}")
+    print(f"color_extracted={json.dumps(build_color_extracted_metadata(color_result), ensure_ascii=False)}")
+    print(f"color_candidates={json.dumps(getattr(color_result, 'candidates', []) or [], ensure_ascii=False)}")
+    print(f"color_search_weights={json.dumps(getattr(color_result, 'search_color_weights', {}) or {}, ensure_ascii=False)}")
     if query_attrs:
         print(f"query_image_color_group={query_attrs.get('target_color_group') or ''}")
         print(f"query_denim_tone={query_attrs.get('denim_tone') or ''}")
@@ -3714,37 +4063,67 @@ def log_search_debug(
         )
 
 
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "ok",
+        "model": FASHION_CLIP_MODEL_ID,
+        "device": str(device),
+        "gemini_available": gemini_client is not None,
+        "dino_sam_enabled": DINO_SAM_ENABLED,
+        "dino_sam_loaded": dino_sam_backend is not None,
+    }
+
+
 @app.post("/search")
-async def search_clothes(file: UploadFile = File(None), query: str = Form(None)):
+async def search_clothes(
+    file: UploadFile = File(None),
+    query: str = Form(None),
+    use_grounding_dino: bool = Form(False),
+):
     if not file:
         raise HTTPException(status_code=400, detail="image is required")
 
     try:
+        t_start = time.perf_counter()
+        timing_acc = {
+            "gemini_ms": 0.0,
+            "dino_sam_ms": 0.0,
+            "embedding_ms": 0.0,
+            "rpc_ms": 0.0,
+        }
         query = (query or "").strip()
         image_only_search = not query
         content = await file.read()
         try:
             image_obj = Image.open(io.BytesIO(content)).convert("RGB")
         except UnidentifiedImageError:
+            t_invalid_image = time.perf_counter()
             print(
                 "Invalid upload image: "
                 f"filename={getattr(file, 'filename', '')}, "
                 f"content_type={getattr(file, 'content_type', '')}, "
                 f"size={len(content)}, "
-                f"head={content[:16].hex()}"
+                f"head={content[:16].hex()}, "
+                f"total_ms={elapsed_ms(t_start, t_invalid_image)}"
             )
             raise HTTPException(status_code=400, detail="이미지 파일을 읽을 수 없습니다. JPG 또는 PNG 이미지로 다시 선택해주세요.")
 
         fashion_validation = validate_fashion_image(image_obj)
+        t_validate = time.perf_counter()
         if not fashion_validation.is_fashion:
+            print(f"[Timing] total={elapsed_ms(t_start, t_validate)}ms, validate={elapsed_ms(t_start, t_validate)}ms")
             raise HTTPException(status_code=400, detail="\uc758\ub958\uac00 \uba85\ud655\ud788 \ubcf4\uc774\ub294 \uc774\ubbf8\uc9c0\ub97c \uc5c5\ub85c\ub4dc\ud574\uc8fc\uc138\uc694.")
 
+        t_embedding_start = time.perf_counter()
         original_image_features = get_image_embedding(image_obj)
+        timing_acc["embedding_ms"] += elapsed_ms(t_embedding_start)
         image_features = original_image_features
         image_category_result = ImageCategoryResult()
         category_filter_source_value = "relaxed"
 
-        # ── 룰 기반 카테고리 (항상 먼저 계산, LLM fallback 용도) ─────────────
+        # 룰 기반 카테고리 (항상 먼저 계산, LLM fallback 용도)
+        t_query_analysis_start = time.perf_counter()
         rule_main_categories, rule_sub_categories = extract_category_from_query(query)
 
         if image_only_search:
@@ -3753,11 +4132,13 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
             intent = QueryIntent(reasoning="image only search", color="", color_mode="ignore", design="")
         else:
             # LLM이 category + intent를 한 번에 추론; 실패 시 룰 기반 fallback 자동 적용
+            t_gemini_start = time.perf_counter()
             intent, main_categories, sub_categories = await analyze_query(
                 query,
                 rule_main_categories=rule_main_categories,
                 rule_sub_categories=rule_sub_categories,
             )
+            timing_acc["gemini_ms"] += elapsed_ms(t_gemini_start)
             if should_use_image_category_reconciliation(
                 query,
                 rule_main_categories,
@@ -3765,7 +4146,9 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
                 main_categories,
             ):
                 try:
+                    t_embedding_start = time.perf_counter()
                     image_category_result = infer_image_category_from_features(original_image_features)
+                    timing_acc["embedding_ms"] += elapsed_ms(t_embedding_start)
                 except Exception as exc:
                     print(f"Image category inference failed, fallback used: {exc}")
                     image_category_result = ImageCategoryResult("", "skipped", [])
@@ -3784,6 +4167,8 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
                 image_category_result,
             )
 
+        t_query_analysis = time.perf_counter()
+
         if sub_categories:
             clothing_label = sub_categories[0]
         elif main_categories:
@@ -3796,15 +4181,18 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
         design_similarity_mode = image_only_search or is_design_similarity_query(query)
         color_mode = intent.color_mode if intent.color_mode in {"target", "same", "different", "ignore"} else "ignore"
 
-        image_preprocess_result = preprocess_query_image_with_dino_sam(
-            image_obj,
-            clothing_label,
-            main_categories,
-            sub_categories,
-        )
-        search_image_obj = image_preprocess_result.image
-        if image_preprocess_result.source in {"groundingdino_sam", "groundingdino_box"}:
-            image_features = get_image_embedding(search_image_obj)
+        t_dino_sam_start = time.perf_counter()
+        if use_grounding_dino:
+            image_preprocess_result = preprocess_query_image_with_dino_sam(
+                image_obj,
+                clothing_label,
+                main_categories,
+                sub_categories,
+            )
+            timing_acc["dino_sam_ms"] += elapsed_ms(t_dino_sam_start)
+        else:
+            image_preprocess_result = QueryImagePreprocessResult(image_obj, "original")
+        color_analysis_image_obj = image_preprocess_result.image
 
         query_image_color = ""
         color_result = ColorExtractionResult("", "skipped", "color_not_requested")
@@ -3816,7 +4204,7 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
         )
         if should_extract_image_attributes:
             denim_context = is_denim_query_context(query, main_categories, sub_categories)
-            color_result = extract_query_color_result(search_image_obj, denim_context, pattern_context_text)
+            color_result = extract_query_color_result(color_analysis_image_obj, denim_context, pattern_context_text)
             if color_mode in {"same", "different"}:
                 query_image_color = normalize_color(color_result.color)
             elif design_similarity_mode and color_result.color:
@@ -3840,18 +4228,20 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
             image_weight = query_build["image_weight"]
             is_specific_query = query_build["is_specific_query"]
 
-        image_design_details = (
-            infer_design_details_from_image_features(image_features, clothing_label)
-            if design_similarity_mode
-            else []
-        )
+        if design_similarity_mode:
+            t_embedding_start = time.perf_counter()
+            image_design_details = infer_design_details_from_image_features(image_features, clothing_label)
+            timing_acc["embedding_ms"] += elapsed_ms(t_embedding_start)
+        else:
+            image_design_details = []
         if text_weight > 0:
+            t_embedding_start = time.perf_counter()
             text_features = get_text_embedding(enhanced_query)
+            timing_acc["embedding_ms"] += elapsed_ms(t_embedding_start)
             query_embedding = F.normalize((image_features * image_weight) + (text_features * text_weight), p=2, dim=-1)
         else:
             query_embedding = F.normalize(image_features, p=2, dim=-1)
         query_embedding_list = query_embedding.squeeze().tolist()
-
         has_design_request = bool((intent.design or "").strip())
         threshold = 0.23 if image_only_search else (0.23 if design_similarity_mode else (0.22 if color_mode == "same" and has_design_request else (0.28 if color_mode == "same" else (0.30 if is_specific_query else 0.35))))
         if color_mode in {"same", "different"}:
@@ -3864,6 +4254,7 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
             "filter_main_categories": main_categories if main_categories else None,
             "filter_sub_categories": sub_categories if sub_categories else None,
         }
+        t_rpc_start = time.perf_counter()
         response = supabase.rpc("match_clothes_fashion", {
             "query_embedding": query_embedding_list,
             "match_threshold": threshold,
@@ -3901,7 +4292,10 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
                 "match_count": match_count,
                 **rpc_filters,
             }).execute()
+        t_rpc = time.perf_counter()
+        timing_acc["rpc_ms"] += elapsed_ms(t_rpc_start, t_rpc)
 
+        t_rerank_start = time.perf_counter()
         ranking_image_color = normalize_color(color_result.color) if color_result.color else query_image_color
         query_attrs = build_query_attrs(
             main_categories,
@@ -3933,12 +4327,32 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
         query_attrs.update(retrieval_relaxation_metadata(retrieval_relax_reason))
         search_warnings = build_search_warnings(intent, color_result, query_attrs)
         results = rerank_results(response.data, intent, query_attrs, limit=10)
+        t_rerank = time.perf_counter()
+
+        timing = {
+            "total_ms": elapsed_ms(t_start, t_rerank),
+            "validate_ms": elapsed_ms(t_start, t_validate),
+            "query_analysis_ms": elapsed_ms(t_query_analysis_start, t_query_analysis),
+            "gemini_ms": round(timing_acc["gemini_ms"], 1),
+            "dino_sam_ms": round(timing_acc["dino_sam_ms"], 1),
+            "embedding_ms": round(timing_acc["embedding_ms"], 1),
+            "rpc_ms": round(timing_acc["rpc_ms"], 1),
+            "rerank_ms": elapsed_ms(t_rerank_start, t_rerank),
+        }
+        print(
+            f"[Timing] total={timing['total_ms']}ms, validate={timing['validate_ms']}ms, "
+            f"query_analysis={timing['query_analysis_ms']}ms, gemini={timing['gemini_ms']}ms, "
+            f"dino_sam={timing['dino_sam_ms']}ms, embedding={timing['embedding_ms']}ms, "
+            f"rpc={timing['rpc_ms']}ms, rerank={timing['rerank_ms']}ms"
+        )
+
         log_search_debug(
             query=query,
             intent=intent,
             main_categories=main_categories,
             sub_categories=sub_categories,
             query_image_color=query_image_color,
+            color_result=color_result,
             color_confidence=color_result.confidence,
             enhanced_query=enhanced_query,
             image_weight=image_weight,
@@ -3961,6 +4375,7 @@ async def search_clothes(file: UploadFile = File(None), query: str = Form(None))
             "query_image_attributes": query_attrs,
             "search_warnings": search_warnings,
             "results": results,
+            "timing": timing,
         }
 
     except HTTPException:

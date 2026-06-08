@@ -2,6 +2,10 @@ import argparse
 import json
 import os
 from collections import Counter
+from types import SimpleNamespace
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -10,9 +14,24 @@ FINAL_COLORS = {"white", "black", "red", "yellow", "green", "blue", "purple", "g
 
 
 def load_environment(env_path):
-    from dotenv import load_dotenv
+    try:
+        from dotenv import load_dotenv
+    except ModuleNotFoundError:
+        load_dotenv = None
 
-    load_dotenv(dotenv_path=env_path)
+    if load_dotenv:
+        load_dotenv(dotenv_path=env_path)
+        return
+
+    if not os.path.exists(env_path):
+        return
+    with open(env_path, "r", encoding="utf-8-sig") as file:
+        for raw in file:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def get_supabase_client(env_path):
@@ -22,9 +41,72 @@ def get_supabase_client(env_path):
     if not supabase_url or not supabase_key:
         raise ValueError("SUPABASE_URL or SUPABASE_KEY is missing.")
 
-    from supabase import create_client
+    try:
+        from supabase import create_client
+    except ModuleNotFoundError:
+        return RestClient(supabase_url, supabase_key)
 
     return create_client(supabase_url, supabase_key)
+
+
+class RestClient:
+    def __init__(self, url, key):
+        self.url = url.rstrip("/")
+        self.key = key
+
+    def table(self, table_name):
+        return RestQuery(self, table_name)
+
+
+class RestQuery:
+    def __init__(self, client, table_name):
+        self.client = client
+        self.table_name = table_name
+        self.params = {}
+
+    def select(self, columns):
+        self.params["select"] = columns.replace(" ", "")
+        return self
+
+    def order(self, column, desc=False):
+        direction = "desc" if desc else "asc"
+        self.params["order"] = f"{column}.{direction}"
+        return self
+
+    def limit(self, value):
+        self.params["limit"] = str(value)
+        return self
+
+    def gte(self, column, value):
+        self.params[column] = f"gte.{value}"
+        return self
+
+    def gt(self, column, value):
+        self.params[column] = f"gt.{value}"
+        return self
+
+    def eq(self, column, value):
+        self.params[column] = f"eq.{value}"
+        return self
+
+    def execute(self):
+        path = f"{quote(self.table_name)}?{urlencode(self.params)}"
+        url = f"{self.client.url}/rest/v1/{path}"
+        request = Request(
+            url,
+            headers={
+                "apikey": self.client.key,
+                "Authorization": f"Bearer {self.client.key}",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urlopen(request, timeout=30) as response:
+                body = response.read().decode("utf-8")
+        except HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Supabase HTTP {exc.code}: {error_body}") from exc
+        return SimpleNamespace(data=json.loads(body) if body else [])
 
 
 def fetch_rows(client, args):
@@ -36,6 +118,7 @@ def fetch_rows(client, args):
         args.color_candidates_column,
         args.color_reason_column,
         args.named_color_column,
+        args.sub_category_column,
         args.pre_hint_color_column,
         args.pattern_hint_column,
         args.pattern_vit_column,
@@ -55,6 +138,8 @@ def fetch_rows(client, args):
         )
         if args.start_id is not None and last_order_value is None:
             query = query.gte(args.id_column, args.start_id)
+        if args.sub_category:
+            query = query.eq(args.sub_category_column, args.sub_category)
         if last_order_value is not None:
             query = query.gt(args.order_column, last_order_value)
 
@@ -147,6 +232,7 @@ def parse_args():
     parser.add_argument("--table", default=os.environ.get("IMAGE_VIEWER_TABLE", "clothes"))
     parser.add_argument("--id-column", default=os.environ.get("IMAGE_VIEWER_ID_COLUMN", "id"))
     parser.add_argument("--name-column", default=os.environ.get("IMAGE_VIEWER_NAME_COLUMN", "name"))
+    parser.add_argument("--sub-category-column", default=os.environ.get("IMAGE_VIEWER_SUB_CATEGORY_COLUMN", "sub_category"))
     parser.add_argument("--order-column", default=os.environ.get("FASHION_COLOR_ORDER_COLUMN", "id"))
     parser.add_argument("--dominant-color-column", default="dominant_color")
     parser.add_argument("--color-confidence-column", default="color_confidence")
@@ -157,6 +243,7 @@ def parse_args():
     parser.add_argument("--pattern-hint-column", default="pattern_hint")
     parser.add_argument("--pattern-vit-column", default="should_run_pattern_vit")
     parser.add_argument("--start-id", type=int, default=None)
+    parser.add_argument("--sub-category", default="")
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--page-size", type=int, default=1000)
     parser.add_argument("--problem-preview", type=int, default=30)

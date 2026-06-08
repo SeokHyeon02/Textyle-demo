@@ -60,7 +60,7 @@ FULL_DEBUG_CANDIDATE_MODE = "full_debug"
 DENIM_TONE_SUB_CATEGORY = "데님팬츠"
 DENIM_TONE_EMPTY = ""
 DENIM_NAME_TONE_KEYWORDS = {
-    "white": {"white", "화이트", "아이보리", "ivory", "에크루", "ecru", "크림", "cream", "베이지", "beige"},
+    "white": {"white", "화이트", "에크루", "ecru", "크림", "cream"},
     "light_blue": {
         "lightblue",
         "lightindigo",
@@ -75,9 +75,13 @@ DENIM_NAME_TONE_KEYWORDS = {
     "mid_blue": {"midblue", "mediumblue", "mediumindigo", "중청"},
     "dark_blue": {"darkblue", "deepblue", "darkwash", "진청", "딥블루", "다크블루"},
     "black": {"black", "블랙", "흑청", "blackdenim"},
+    "washed_black": {"washedblack", "blackwash", "blackwashed", "fadedblack", "vintageblack", "워싱블랙", "블랙워싱", "워시드블랙", "페이드블랙", "빈티지블랙"},
     "indigo": {"indigo", "rawdenim", "rawindigo", "인디고", "생지"},
     "gray": {"gray", "grey", "그레이", "차콜", "charcoal"},
+    "blue_gray": {"bluegray", "grayblue", "slateblue", "회청", "그레이블루", "블루그레이"},
+    "washed_gray": {"washedgray", "graywash", "greywash", "워시드그레이", "그레이워싱", "워싱그레이"},
     "brown": {"brown", "브라운", "카키", "khaki", "모카", "mocha", "초코", "choco", "카멜", "camel"},
+    "beige": {"beige", "베이지", "sand", "샌드", "oatmeal", "오트밀", "ivory", "아이보리"},
 }
 
 PRODUCT_NAME_COLOR_KEYWORDS = [
@@ -364,6 +368,8 @@ def denim_tone_from_image(color, rgb):
     if color == "gray":
         return "gray"
     if color == "brown":
+        if brightness is not None and brightness >= 165:
+            return "beige"
         return "brown"
     if color != "blue":
         return DENIM_TONE_EMPTY

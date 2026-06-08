@@ -28,6 +28,15 @@ export default function TabLayout() {
             <Ionicons name={focused ? "heart" : "heart-outline"} size={26} color={color} />,
         }}
       />
+
+      <Tabs.Screen
+        name="guide"
+        options={{
+          title: '안내',
+          tabBarIcon: ({ color, focused }) => 
+            <Ionicons name={focused ? "book" : "book-outline"} size={26} color={color} />,
+        }}
+      />
       
       <Tabs.Screen
         name="login"

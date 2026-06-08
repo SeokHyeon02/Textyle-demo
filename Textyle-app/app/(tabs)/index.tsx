@@ -30,6 +30,124 @@ type SearchResult = {
   price?: number | string | null;
   similarity?: number | null;
   shop_link?: string | null;
+  _ranking?: RankingInfo;
+};
+
+type RankingInfo = {
+  final_score?: number;
+  base_similarity?: number;
+  color_adjustment?: number;
+  category_bonus?: number;
+  sub_category_bonus?: number;
+  tone_adjustment?: number;
+  design_adjustment?: number;
+  design_matches?: string[];
+  design_conflicts?: string[];
+  candidate_color?: string;
+  candidate_denim_tone?: string;
+  exclude_reason?: string;
+};
+
+type SearchTiming = {
+  total_ms?: number;
+  validate_ms?: number;
+  query_analysis_ms?: number;
+  gemini_ms?: number;
+  dino_sam_ms?: number;
+  embedding_ms?: number;
+  rpc_ms?: number;
+  rerank_ms?: number;
+  [key: string]: number | undefined;
+};
+
+type SearchMetadata = {
+  enhanced_query?: string;
+  color_extracted?: {
+    color?: string;
+    detailed_color?: string;
+    confidence?: string;
+    pattern?: string;
+  };
+  intent?: {
+    color_mode?: string;
+    color?: string;
+    design?: string;
+    reasoning?: string;
+  };
+  query_image_attributes?: {
+    main_categories?: string[];
+    sub_categories?: string[];
+    image_preprocess_source?: string;
+    denim_tone?: string;
+    [key: string]: unknown;
+  };
+  search_warnings?: string[];
+  timing?: SearchTiming;
+};
+
+const COLOR_MODE_LABELS: Record<string, string> = {
+  same: '같은 색',
+  different: '다른 색',
+  target: '특정 색',
+  ignore: '색상 무관',
+};
+
+const WARNING_LABELS: Record<string, string> = {
+  uploaded_image_color_not_detected: '⚠️ 이미지 색상을 안정적으로 찾지 못했습니다',
+  uploaded_image_color_low_confidence: '⚠️ 색상 추출 신뢰도가 낮습니다',
+  design_similarity_uses_image_embedding_only: 'ℹ️ 디자인 유사도는 이미지 특징 기반입니다',
+};
+
+const LOADING_MESSAGES = [
+  '🔍 이미지 분석 중...',
+  '🧠 검색 의도 해석 중...',
+  '👕 유사 상품 검색 중...',
+  '⏳ 정밀 검색 중입니다. 조금만 기다려주세요.',
+];
+
+const getRankingLabels = (ranking?: RankingInfo): string[] => {
+  if (!ranking) return [];
+  const labels: string[] = [];
+  if ((ranking.category_bonus ?? 0) > 0 || (ranking.sub_category_bonus ?? 0) > 0) {
+    labels.push('📂 카테고리 일치');
+  }
+  if ((ranking.color_adjustment ?? 0) > 0.05) {
+    labels.push('🎨 색상 일치');
+  }
+  if ((ranking.tone_adjustment ?? 0) > 0) {
+    labels.push('🔵 데님 톤 일치');
+  }
+  if (ranking.design_matches && ranking.design_matches.length > 0) {
+    labels.push(`✂️ 디자인 유사 (${ranking.design_matches.join(', ')})`);
+  }
+  if ((ranking.color_adjustment ?? 0) < -0.10) {
+    labels.push('⚠️ 색상 불일치');
+  }
+  if (ranking.exclude_reason) {
+    labels.push('⛔ 필터 충돌');
+  }
+  return labels;
+};
+
+const formatTiming = (value?: number) => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}초` : `${Math.round(value)}ms`;
+};
+
+const getTimingRows = (timing?: SearchTiming) => {
+  if (!timing) return [];
+
+  return [
+    ['검증', timing.validate_ms],
+    ['쿼리 해석', timing.query_analysis_ms],
+    ['Gemini', timing.gemini_ms],
+    ['DINO/SAM', timing.dino_sam_ms],
+    ['임베딩', timing.embedding_ms],
+    ['DB 검색', timing.rpc_ms],
+    ['재정렬', timing.rerank_ms],
+  ]
+    .map(([label, value]) => ({ label: label as string, value: formatTiming(value as number | undefined) }))
+    .filter(row => row.value);
 };
 
 export default function SearchScreen() {
@@ -41,6 +159,9 @@ export default function SearchScreen() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [searchMetadata, setSearchMetadata] = useState<SearchMetadata | null>(null);
+  const [loadingStage, setLoadingStage] = useState(0);
+  const [useGroundingDino, setUseGroundingDino] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -73,6 +194,9 @@ export default function SearchScreen() {
 
     setIsLoading(true);
     setErrorMessage(null);
+    setSearchMetadata(null);
+    setLoadingStage(0);
+    const stageTimer = setInterval(() => setLoadingStage(prev => prev + 1), 4000);
 
     try {
       if (!FASHION_API_URL) {
@@ -91,6 +215,7 @@ export default function SearchScreen() {
       } as any);
 
       formData.append('query', searchText.trim());
+      formData.append('use_grounding_dino', useGroundingDino ? 'true' : 'false');
 
       const response = await fetch(`${FASHION_API_URL}/search`, {
         method: 'POST',
@@ -104,6 +229,14 @@ export default function SearchScreen() {
 
       const data = await response.json();
       setSearchResults(Array.isArray(data.results) ? data.results : []);
+      setSearchMetadata({
+        enhanced_query: data.enhanced_query,
+        color_extracted: data.color_extracted,
+        intent: data.intent,
+        query_image_attributes: data.query_image_attributes,
+        search_warnings: data.search_warnings,
+        timing: data.timing,
+      });
       setHasSearched(true);
     } catch (error) {
       console.error('검색 에러:', error);
@@ -112,6 +245,8 @@ export default function SearchScreen() {
         : '서버에 연결할 수 없습니다. FastAPI 서버와 API 주소를 확인해주세요.';
       setErrorMessage(message);
     } finally {
+      clearInterval(stageTimer);
+      setLoadingStage(0);
       setIsLoading(false);
     }
   };
@@ -156,15 +291,16 @@ export default function SearchScreen() {
     return Number.isFinite(numericPrice) ? `${numericPrice.toLocaleString()}원` : String(price);
   };
 
-  const formatSimilarity = (similarity?: number | null) => {
-    if (typeof similarity !== 'number') return null;
-    return `유사도 ${(similarity * 100).toFixed(1)}%`;
-  };
-
   const resetResults = () => {
+    setImageUri(null);
+    setSelectedImage(null);
+    setSearchText('');
     setSearchResults([]);
     setHasSearched(false);
     setErrorMessage(null);
+    setSearchMetadata(null);
+    setLoadingStage(0);
+    setUseGroundingDino(false);
   };
 
   if (!session) {
@@ -187,8 +323,13 @@ export default function SearchScreen() {
       <SafeAreaView style={styles.safeArea}>
         <ScrollView contentContainerStyle={styles.resultContent}>
           <View style={styles.resultHeader}>
-            <Text style={styles.screenTitle}>검색 결과</Text>
-            <Text style={styles.resultCount}>{searchResults.length}개 상품</Text>
+            <View>
+              <Text style={styles.screenTitle}>검색 결과</Text>
+              <Text style={styles.resultCount}>{searchResults.length}개 상품을 비교해보세요.</Text>
+            </View>
+            <TouchableOpacity style={styles.secondaryButton} onPress={resetResults}>
+              <Text style={styles.secondaryButtonText}>다시 검색</Text>
+            </TouchableOpacity>
           </View>
 
           {searchResults.length === 0 ? (
@@ -202,66 +343,110 @@ export default function SearchScreen() {
             </View>
           ) : (
             <>
+              {searchMetadata && (
+                <View style={styles.metadataCard}>
+                  <Text style={styles.metadataTitle}>🔍 검색 해석</Text>
+                  {searchMetadata.enhanced_query && (
+                    <Text style={styles.metadataRow}>
+                      서버 해석: {searchMetadata.enhanced_query}
+                    </Text>
+                  )}
+                  {searchMetadata.intent?.color_mode && searchMetadata.intent.color_mode !== 'ignore' && (
+                    <Text style={styles.metadataRow}>
+                      색상 조건: {COLOR_MODE_LABELS[searchMetadata.intent.color_mode] || searchMetadata.intent.color_mode}
+                      {searchMetadata.intent.color ? ` (${searchMetadata.intent.color})` : ''}
+                    </Text>
+                  )}
+                  {searchMetadata.color_extracted?.color && (
+                    <Text style={styles.metadataRow}>
+                      이미지 색상: {searchMetadata.color_extracted.detailed_color || searchMetadata.color_extracted.color}
+                      {searchMetadata.color_extracted.confidence ? ` (신뢰도 ${searchMetadata.color_extracted.confidence})` : ''}
+                    </Text>
+                  )}
+                  {searchMetadata.query_image_attributes?.main_categories?.[0] && (
+                    <Text style={styles.metadataRow}>
+                      카테고리: {searchMetadata.query_image_attributes.main_categories[0]}
+                      {searchMetadata.query_image_attributes.sub_categories?.[0] ? ` > ${searchMetadata.query_image_attributes.sub_categories[0]}` : ''}
+                    </Text>
+                  )}
+                  {searchMetadata.query_image_attributes?.image_preprocess_source && (
+                    <Text style={styles.metadataRow}>
+                      이미지 분석: {searchMetadata.query_image_attributes.image_preprocess_source === 'groundingdino_sam' ? '정밀 분석' : searchMetadata.query_image_attributes.image_preprocess_source}
+                    </Text>
+                  )}
+                  {searchMetadata.timing?.total_ms != null && (
+                    <View style={styles.timingBlock}>
+                      <Text style={styles.metadataRow}>
+                        응답 시간: {formatTiming(searchMetadata.timing.total_ms)}
+                      </Text>
+                      <View style={styles.timingGrid}>
+                        {getTimingRows(searchMetadata.timing).map(row => (
+                          <View key={row.label} style={styles.timingPill}>
+                            <Text style={styles.timingLabel}>{row.label}</Text>
+                            <Text style={styles.timingValue}>{row.value}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  )}
+                  {searchMetadata.search_warnings && searchMetadata.search_warnings.length > 0 && (
+                    <View style={styles.warningsContainer}>
+                      {searchMetadata.search_warnings.map((warning, idx) => (
+                        <Text key={idx} style={styles.warningText}>
+                          {WARNING_LABELS[warning] || warning}
+                        </Text>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              )}
+
               {searchResults.map((item, index) => {
-                const similarityText = formatSimilarity(item.similarity);
+                const rankingLabels = getRankingLabels(item._ranking);
 
                 return (
                   <View key={`${item.name ?? 'result'}-${index}`} style={styles.resultCard}>
-                    <Image
-                      source={{ uri: getValidImageUrl(item.image_url) }}
-                      style={styles.resultImage}
-                      resizeMode="cover"
-                    />
+                    <View style={styles.resultImageFrame}>
+                      <Image
+                        source={{ uri: getValidImageUrl(item.image_url) }}
+                        style={styles.resultImage}
+                        resizeMode="contain"
+                      />
+                      <View style={styles.rankBadge}>
+                        <Text style={styles.rankBadgeText}>#{index + 1}</Text>
+                      </View>
+                    </View>
                     <View style={styles.resultInfo}>
-                      <View style={styles.infoSection}>
-                        <Text style={styles.infoLabel}>브랜드</Text>
+                      <View style={styles.resultTopLine}>
                         <Text style={styles.resultBrand} numberOfLines={1}>
                           {item.brand_name || '브랜드 정보 없음'}
                         </Text>
+                        <Text style={styles.resultPrice}>{formatPrice(item.price)}</Text>
                       </View>
-                      <View style={styles.infoDivider} />
-                      <View style={styles.infoSection}>
-                        <Text style={styles.infoLabel}>제품명</Text>
-                        <Text style={styles.resultName} numberOfLines={2}>
-                          {item.name || '상품명 정보 없음'}
-                        </Text>
-                      </View>
-                      <View style={styles.infoDivider} />
-                      <View style={styles.infoGrid}>
-                        <View style={styles.infoGridItem}>
-                          <Text style={styles.infoLabel}>카테고리</Text>
-                          <Text style={styles.resultCategory} numberOfLines={1}>
-                            {formatCategory(item)}
-                          </Text>
-                        </View>
-                        <View style={styles.infoGridItem}>
-                          <Text style={styles.infoLabel}>가격</Text>
-                          <Text style={styles.resultPrice}>{formatPrice(item.price)}</Text>
-                        </View>
-                      </View>
-                      {similarityText && (
-                        <>
-                          <View style={styles.infoDivider} />
-                          <View style={styles.resultFooterRow}>
-                            <Text style={styles.resultSimilarity}>{similarityText}</Text>
-                            <TouchableOpacity
-                              style={styles.linkButton}
-                              onPress={() => openShopLink(item.shop_link)}>
-                              <Text style={styles.linkButtonText}>상품 보러가기</Text>
-                            </TouchableOpacity>
+                      <Text style={styles.resultName} numberOfLines={2}>
+                        {item.name || '상품명 정보 없음'}
+                      </Text>
+                      <Text style={styles.resultCategory} numberOfLines={1}>
+                        {formatCategory(item)}
+                      </Text>
+                      {rankingLabels.length > 0 && (
+                        <View style={styles.rankingBlock}>
+                          <Text style={styles.rankingTitle}>추천 이유</Text>
+                          <View style={styles.rankingLabelsContainer}>
+                            {rankingLabels.map((label, labelIdx) => (
+                              <Text key={labelIdx} style={styles.rankingLabel}>{label}</Text>
+                            ))}
                           </View>
-                        </>
+                        </View>
                       )}
-                      {!similarityText && (
-                        <>
-                          <View style={styles.infoDivider} />
-                          <TouchableOpacity
-                            style={styles.linkButton}
-                            onPress={() => openShopLink(item.shop_link)}>
-                            <Text style={styles.linkButtonText}>상품 보러가기</Text>
-                          </TouchableOpacity>
-                        </>
-                      )}
+                      <TouchableOpacity
+                        style={styles.resultActionButton}
+                        onPress={() => openShopLink(item.shop_link)}>
+                        <Text style={styles.resultActionButtonText}>상품 보러가기</Text>
+                        <View style={styles.resultActionIcon}>
+                          <Ionicons name="arrow-forward" size={15} color="#FFFFFF" />
+                        </View>
+                      </TouchableOpacity>
                     </View>
                   </View>
                 );
@@ -313,6 +498,23 @@ export default function SearchScreen() {
           returnKeyType="search"
         />
 
+        <TouchableOpacity
+          style={[styles.analysisToggle, useGroundingDino && styles.analysisToggleActive]}
+          onPress={() => setUseGroundingDino(prev => !prev)}
+          activeOpacity={0.82}>
+          <View style={styles.analysisToggleTextBlock}>
+            <Text style={styles.analysisToggleTitle}>정밀 분석</Text>
+            <Text style={styles.analysisToggleBody}>
+              켜면 옷 영역을 먼저 분리해서 검색합니다. 느리고 결과가 달라질 수 있어요.
+            </Text>
+          </View>
+          <View style={[styles.toggleTrack, useGroundingDino && styles.toggleTrackActive]}>
+            <View style={[styles.toggleThumb, useGroundingDino && styles.toggleThumbActive]}>
+              {useGroundingDino && <Ionicons name="checkmark" size={13} color="#3E6AE1" />}
+            </View>
+          </View>
+        </TouchableOpacity>
+
         {errorMessage ? (
           <Text style={styles.errorText}>{errorMessage}</Text>
         ) : (
@@ -326,7 +528,7 @@ export default function SearchScreen() {
           {isLoading ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator color="#fff" />
-              <Text style={styles.primaryButtonText}>찾는 중...</Text>
+              <Text style={styles.primaryButtonText}>{LOADING_MESSAGES[Math.min(loadingStage, LOADING_MESSAGES.length - 1)]}</Text>
             </View>
           ) : (
             <Text style={styles.primaryButtonText}>비슷한 옷 찾기</Text>
@@ -358,7 +560,7 @@ const styles = StyleSheet.create({
   },
   resultContent: {
     paddingHorizontal: 20,
-    paddingTop: 28,
+    paddingTop: 24,
     paddingBottom: 32,
   },
   headerBlock: {
@@ -465,6 +667,64 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     textAlignVertical: 'center',
   },
+  analysisToggle: {
+    width: '100%',
+    maxWidth: 430,
+    minHeight: 74,
+    marginTop: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#EEEEEE',
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  analysisToggleActive: {
+    borderColor: '#AFC2FF',
+    backgroundColor: '#F6F8FF',
+  },
+  analysisToggleTextBlock: {
+    flex: 1,
+    minWidth: 0,
+  },
+  analysisToggleTitle: {
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
+    color: '#171A20',
+  },
+  analysisToggleBody: {
+    marginTop: 3,
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#5C5E62',
+  },
+  toggleTrack: {
+    width: 44,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#D9D9D9',
+    padding: 3,
+    justifyContent: 'center',
+  },
+  toggleTrackActive: {
+    backgroundColor: '#3E6AE1',
+  },
+  toggleThumb: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toggleThumbActive: {
+    transform: [{ translateX: 18 }],
+  },
   primaryButton: {
     width: '100%',
     maxWidth: 430,
@@ -493,14 +753,32 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 430,
     alignSelf: 'center',
-    alignItems: 'center',
-    marginBottom: 24,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+    marginBottom: 18,
   },
   resultCount: {
     marginTop: 6,
     color: '#5C5E62',
     fontSize: 14,
-    textAlign: 'center',
+    lineHeight: 20,
+  },
+  secondaryButton: {
+    minHeight: 38,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#D0D1D2',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 13,
+  },
+  secondaryButtonText: {
+    color: '#393C41',
+    fontSize: 13,
+    fontWeight: '600',
   },
   emptyState: {
     minHeight: 420,
@@ -524,8 +802,65 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     textAlign: 'center',
   },
-  resultCard: {
+  metadataCard: {
+    width: '100%',
+    maxWidth: 430,
+    alignSelf: 'center',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#EEEEEE',
+    backgroundColor: '#F4F4F4',
+    padding: 14,
+    marginBottom: 16,
+  },
+  metadataTitle: {
+    color: '#171A20',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  metadataRow: {
+    color: '#393C41',
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 4,
+  },
+  timingBlock: {
+    marginTop: 4,
+  },
+  timingGrid: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+  },
+  timingPill: {
+    borderRadius: 6,
+    backgroundColor: '#F4F4F4',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  timingLabel: {
+    color: '#5C5E62',
+    fontSize: 11,
+    lineHeight: 14,
+  },
+  timingValue: {
+    color: '#171A20',
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 16,
+  },
+  warningsContainer: {
+    marginTop: 10,
+    gap: 6,
+  },
+  warningText: {
+    color: '#B54708',
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  resultCard: {
     width: '100%',
     maxWidth: 430,
     alignSelf: 'center',
@@ -533,82 +868,123 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#EEEEEE',
     backgroundColor: '#FFFFFF',
-    padding: 12,
-    marginBottom: 14,
+    overflow: 'hidden',
+    marginBottom: 18,
+  },
+  resultImageFrame: {
+    width: '100%',
+    height: 286,
+    backgroundColor: '#FAFAFA',
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEEEEE',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
   },
   resultImage: {
-    width: 116,
-    height: 148,
-    borderRadius: 6,
-    marginRight: 14,
-    backgroundColor: '#F4F4F4',
+    width: '100%',
+    height: '100%',
+  },
+  rankBadge: {
+    position: 'absolute',
+    left: 12,
+    top: 12,
+    minHeight: 30,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.94)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  rankBadgeText: {
+    color: '#171A20',
+    fontSize: 13,
+    fontWeight: '600',
   },
   resultInfo: {
-    flex: 1,
-    minHeight: 148,
+    padding: 14,
   },
-  infoSection: {
-    paddingBottom: 7,
-  },
-  infoDivider: {
-    height: 1,
-    backgroundColor: '#EEEEEE',
-    marginBottom: 7,
-  },
-  infoLabel: {
-    color: '#8E8E8E',
-    fontSize: 11,
-    lineHeight: 15,
-    marginBottom: 2,
-  },
-  infoGrid: {
+  resultTopLine: {
     flexDirection: 'row',
-    gap: 10,
-    paddingBottom: 7,
-  },
-  infoGridItem: {
-    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 8,
   },
   resultBrand: {
-    color: '#393C41',
+    flex: 1,
+    color: '#5C5E62',
     fontSize: 14,
     fontWeight: '600',
   },
   resultName: {
     color: '#171A20',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '600',
-    lineHeight: 20,
+    lineHeight: 22,
   },
   resultCategory: {
+    marginTop: 6,
     color: '#5C5E62',
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 13,
+    lineHeight: 18,
   },
   resultPrice: {
     color: '#171A20',
     fontSize: 15,
     fontWeight: '600',
   },
-  resultSimilarity: {
-    color: '#5C5E62',
-    fontSize: 12,
-    lineHeight: 18,
+  rankingBlock: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#EEEEEE',
   },
-  resultFooterRow: {
+  rankingTitle: {
+    color: '#5C5E62',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+  rankingLabelsContainer: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+  },
+  rankingLabel: {
+    borderRadius: 4,
+    backgroundColor: '#EEF3FF',
+    color: '#3451B2',
+    fontSize: 11,
+    lineHeight: 15,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+  },
+  resultActionButton: {
+    minHeight: 46,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#D0D1D2',
+    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    flexDirection: 'row',
+    marginTop: 14,
+    paddingLeft: 14,
+    paddingRight: 8,
   },
-  linkButton: {
-    alignSelf: 'flex-start',
-    justifyContent: 'center',
-  },
-  linkButtonText: {
-    color: '#3E6AE1',
-    fontSize: 14,
+  resultActionButtonText: {
+    color: '#171A20',
+    fontSize: 15,
     fontWeight: '600',
+  },
+  resultActionIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 4,
+    backgroundColor: '#3E6AE1',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   bottomReturnButton: {
     width: '100%',
