@@ -62,21 +62,21 @@ PATTERN_CONTEXT_TERMS = (
 # ---------------------------------------------------------------------------
 
 COLOR_CENTROIDS = {
-    "black": (0, 0, 0),
-    "white": (255, 255, 255),
-    "gray": (128, 128, 128),
-    "navy": (0, 0, 128),
-    "blue": (0, 0, 255),
-    "indigo": (75, 0, 130),
-    "red": (255, 0, 0),
-    "green": (0, 128, 0),
-    "khaki": (240, 230, 140),
-    "yellow": (255, 255, 0),
-    "beige": (245, 245, 220),
-    "brown": (165, 42, 42),
-    "pink": (255, 192, 203),
-    "purple": (128, 0, 128),
-    "orange": (255, 165, 0),
+    "black": (30, 30, 32),
+    "white": (235, 235, 225),
+    "gray": (125, 125, 125),
+    "navy": (22, 34, 72),
+    "blue": (45, 100, 185),
+    "indigo": (38, 58, 95),
+    "red": (175, 45, 45),
+    "green": (55, 120, 70),
+    "khaki": (105, 110, 70),
+    "yellow": (220, 190, 65),
+    "beige": (205, 180, 135),
+    "brown": (105, 70, 45),
+    "pink": (215, 120, 155),
+    "purple": (110, 70, 145),
+    "orange": (210, 115, 45),
 }
 
 FINAL_COLOR_CATEGORIES = {
@@ -459,14 +459,15 @@ def css_named_rgb(name: str) -> tuple[int, int, int]:
 
 
 FINAL_COLOR_RGB_CENTROIDS = {
-    color: css_named_rgb(color)
+    color: COLOR_CENTROIDS[color]
     for color in FINAL_COLOR_CATEGORIES
 }
 
 DENIM_COLOR_RGB_CENTROIDS = {
-    "black": css_named_rgb("black"),
-    "gray": css_named_rgb("gray"),
-    "blue": css_named_rgb("blue"),
+    "black": (32, 32, 35),
+    "gray": (95, 95, 100),
+    "indigo": (38, 58, 95),
+    "blue": (70, 115, 175),
 }
 
 _NAMED_COLOR_PALETTE_CACHE: list[tuple[str, str, tuple]] | None = None

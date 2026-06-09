@@ -1502,6 +1502,11 @@ def denim_query_named_color(named_color: str, rgb, query_attrs) -> tuple[str, tu
 
 
 def query_named_color_info(query_attrs) -> dict:
+    named_color = normalize_text((query_attrs or {}).get("query_named_color"))
+    named_rgb = parse_rgb((query_attrs or {}).get("query_named_rgb"))
+    if named_color and named_rgb:
+        return {"named_color": named_color, "rgb": named_rgb}
+
     for candidate in (query_attrs or {}).get("color_candidates") or []:
         raw_rgb = parse_rgb(candidate.get("rgb"))
         named_rgb = parse_rgb(candidate.get("named_rgb"))
@@ -1536,8 +1541,14 @@ def search_query_color_for_mode(
     query_image_color: str,
     intent: QueryIntent,
     color_result: ColorExtractionResult | None = None,
+    user_query: str = "",
 ) -> str:
     color_mode = intent.color_mode if intent.color_mode in {"target", "same", "different", "ignore"} else "ignore"
+    if color_mode in {"target", "different"}:
+        named_color, _rgb = infer_named_color_from_text(compact_prompt(intent.color, intent.design, user_query))
+        if named_color:
+            return named_color
+        return normalize_color(intent.color) or query_image_color
     if color_mode != "same":
         return query_image_color
     return resolve_detailed_color(color_result) or query_image_color
@@ -1551,8 +1562,12 @@ def denim_tone_prompt(tone: str, color_prompt: str) -> str:
     color_prompt = normalize_text(color_prompt)
     tone = normalize_candidate_denim_tone(tone)
     if tone in {"light", "light_blue"}:
+        if color_prompt in {"lightblue", "light blue"}:
+            color_prompt = "blue"
         return compact_prompt("light", color_prompt or "blue")
     if tone in {"medium", "mid_blue"}:
+        if color_prompt in {"steelblue", "mediumblue", "medium blue", "midblue", "mid blue"}:
+            color_prompt = "blue"
         return compact_prompt("medium", color_prompt or "blue")
     if tone == "dark_blue":
         return "dark blue"
@@ -1579,35 +1594,65 @@ def remove_denim_tone_words(design: str, tone: str) -> str:
         return normalized
 
     terms_by_tone = {
-        "light": ("light wash", "light washed", "light blue", "lightblue", "light"),
-        "light_blue": ("light wash", "light washed", "light blue", "lightblue", "light"),
-        "medium": ("medium wash", "mid wash", "medium blue", "mid blue", "medium", "mid"),
-        "mid_blue": ("medium wash", "mid wash", "medium blue", "mid blue", "medium", "mid"),
-        "dark": ("dark wash", "dark washed", "dark blue", "darkblue", "dark"),
-        "dark_blue": ("dark wash", "dark washed", "dark blue", "darkblue", "dark"),
-        "black": ("black wash", "black washed", "black"),
+        "light": ("light wash", "light washed", "light blue", "lightblue", "light", "연청", "라이트 블루", "라이트블루"),
+        "light_blue": ("light wash", "light washed", "light blue", "lightblue", "light", "연청", "라이트 블루", "라이트블루"),
+        "medium": ("medium wash", "mid wash", "medium blue", "mid blue", "medium", "mid", "중청"),
+        "mid_blue": ("medium wash", "mid wash", "medium blue", "mid blue", "medium", "mid", "중청"),
+        "dark": ("dark wash", "dark washed", "dark blue", "darkblue", "dark", "진청"),
+        "dark_blue": ("dark wash", "dark washed", "dark blue", "darkblue", "dark", "진청"),
+        "black": ("black wash", "black washed", "black", "흑청"),
         "washed_black": ("washed black", "black wash", "black washed"),
         "gray": ("gray wash", "grey wash", "gray", "grey"),
         "washed_gray": ("washed gray", "washed grey", "gray wash", "grey wash"),
         "blue_gray": ("blue gray", "gray blue", "blue grey", "grey blue"),
-        "indigo": ("raw denim", "raw indigo", "one wash", "one washed", "indigo", "raw"),
+        "indigo": ("raw denim", "raw indigo", "one wash", "one washed", "indigo", "raw", "생지", "인디고"),
     }
     for term in terms_by_tone.get(normalize_candidate_denim_tone(tone), ()):
-        normalized = re.sub(rf"\b{re.escape(term)}\b", " ", normalized)
+        if re.search(r"[가-힣]", term):
+            normalized = normalized.replace(term, " ")
+        else:
+            normalized = re.sub(rf"\b{re.escape(term)}\b", " ", normalized)
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def denim_enhanced_query_prompt(color_prompt: str, design: str, en_clothing_label: str) -> str:
+def denim_enhanced_query_prompt(color_prompt: str, design: str, en_clothing_label: str, user_query: str = "") -> str:
     label = normalize_text(en_clothing_label)
+    tone = infer_denim_tone_from_text(compact_prompt(design, user_query))
     if "denim" not in label and "jean" not in label:
-        return compact_prompt(color_prompt, design, en_clothing_label)
+        if not tone or not is_denim_context_from_text(design, user_query):
+            return compact_prompt(color_prompt, design, en_clothing_label)
+        label = "denim jeans"
 
-    tone = infer_denim_tone_from_text(design)
     if not tone:
-        return compact_prompt(color_prompt, design, en_clothing_label)
+        return compact_prompt(color_prompt, design, label)
 
     remaining_design = remove_denim_tone_words(design, tone)
-    return compact_prompt(remaining_design, denim_tone_prompt(tone, color_prompt), en_clothing_label)
+    return compact_prompt(remaining_design, denim_tone_prompt(tone, color_prompt), label)
+
+
+NAMED_COLOR_RGB_SEEDS = {
+    "lightblue": (173, 216, 230),
+    "steelblue": (70, 130, 180),
+    "darkblue": (0, 0, 139),
+    "navy": (0, 0, 128),
+    "midnightblue": (25, 25, 112),
+    "royalblue": (65, 105, 225),
+    "aqua": (0, 255, 255),
+    "skyblue": (135, 206, 235),
+    "black": (0, 0, 0),
+    "dimgray": (105, 105, 105),
+    "gray": (128, 128, 128),
+    "ivory": (255, 255, 240),
+    "beige": (245, 245, 220),
+    "maroon": (128, 0, 0),
+    "brown": (165, 42, 42),
+    "pink": (255, 192, 203),
+    "purple": (128, 0, 128),
+    "orange": (255, 165, 0),
+    "red": (255, 0, 0),
+    "green": (0, 128, 0),
+    "yellow": (255, 255, 0),
+}
 
 
 def infer_named_color_from_text(text: str) -> tuple[str, tuple[int, int, int] | None]:
@@ -1620,21 +1665,39 @@ def infer_named_color_from_text(text: str) -> tuple[str, tuple[int, int, int] | 
         ("navy", ("navy", "raw denim", "one washed", "one wash", "네이비", "남색", "인디고", "indigo", "생지")),
         ("midnightblue", ("midnight blue", "midnight", "흑청")),
         ("royalblue", ("royal blue",)),
+        ("aqua", ("aqua blue", "aqua", "아쿠아", "아쿠아 블루")),
+        ("skyblue", ("sky blue", "skyblue", "하늘색", "스카이 블루", "스카이블루")),
         ("black", ("black", "블랙", "오일블랙", "oil black")),
+        ("dimgray", ("charcoal", "차콜")),
         ("gray", ("gray", "grey", "그레이")),
+        ("ivory", ("ivory", "아이보리")),
+        ("beige", ("beige", "베이지")),
+        ("maroon", ("burgundy", "버건디", "wine", "와인")),
+        ("brown", ("brown", "브라운", "갈색")),
+        ("pink", ("pink", "핑크")),
+        ("purple", ("purple", "퍼플", "보라")),
+        ("orange", ("orange", "오렌지", "주황")),
+        ("red", ("red", "레드", "빨강", "빨간색")),
+        ("green", ("green", "그린", "초록", "올리브", "olive")),
+        ("yellow", ("yellow", "옐로우", "노랑", "노란색")),
     )
     for named_color, terms in named_terms:
         for term in terms:
             term_text = normalize_text(term)
             term_compact = re.sub(r"[^a-z0-9가-힣]+", "", term_text)
-            if term_text in normalized or (term_compact and term_compact in compact):
-                _name, _group, rgb = nearest_named_color(parse_named_rgb_seed(named_color))
-                return named_color, rgb
+            if " " not in term_text and re.fullmatch(r"[a-z0-9]+", term_compact or ""):
+                matched = bool(re.search(rf"\b{re.escape(term_text)}\b", normalized))
+            else:
+                matched = term_text in normalized or (term_compact and term_compact in compact)
+            if matched:
+                return named_color, parse_named_rgb_seed(named_color)
     return "", None
 
 
 def parse_named_rgb_seed(named_color: str) -> tuple[int, int, int]:
     named_color = normalize_text(named_color)
+    if named_color in NAMED_COLOR_RGB_SEEDS:
+        return NAMED_COLOR_RGB_SEEDS[named_color]
     if named_color in CSS_NAMED_COLOR_HEX:
         return css_named_rgb(named_color)
     return (0, 0, 0)
@@ -1859,7 +1922,7 @@ def legacy_dark_denim_adjustment(query_attrs, candidate_named: str, candidate_to
 
 
 def fine_color_adjustment(item, color_candidates, query_attrs, color_mode: str) -> tuple[float, str, str, float | None, float, bool, str]:
-    if color_mode != "same":
+    if color_mode not in {"same", "target"}:
         return 0.0, "", "", None, 0.0, False, "none"
     query_info = query_named_color_info(query_attrs)
     candidate_info = candidate_named_color_info(item, color_candidates)
@@ -3535,6 +3598,9 @@ def build_query_attrs(
                 break
     combined_design_details = sorted(text_design_details | set(image_design_details or []))
     explicit_color = normalize_color(intent.color)
+    query_named_color, query_named_rgb = infer_named_color_from_text(
+        compact_prompt(intent.color, intent.design, query)
+    )
     color_source = "explicit_text" if explicit_color else ("image" if image_color else "none")
     excluded_color = infer_excluded_color_from_text(query)
     image_category_result = image_category_result or ImageCategoryResult()
@@ -3548,6 +3614,8 @@ def build_query_attrs(
         "detected_color": detected_color or image_color,
         "secondary_colors": secondary_colors or [],
         "color_candidates": color_candidates or [],
+        "query_named_color": query_named_color,
+        "query_named_rgb": query_named_rgb,
         "is_mixed_color": is_mixed_color,
         "pattern": pattern,
         "search_color_weights": search_color_weights or {},
@@ -3613,12 +3681,14 @@ def build_enhanced_query(
     intent: QueryIntent,
     design_similarity_mode: bool = False,
     color_result: ColorExtractionResult | None = None,
+    user_query: str = "",
 ):
     has_color_request = bool(intent.color.strip()) if intent.color else False
     has_color_condition = intent.color_mode in {"target", "same", "different"}
     has_design_request = bool(intent.design.strip()) if intent.design else False
     is_specific_query = has_color_request or has_color_condition or has_design_request
-    query_color_prompt = search_query_color_for_mode(query_image_color, intent, color_result)
+    query_color_prompt = search_query_color_for_mode(query_image_color, intent, color_result, user_query)
+    text_named_color, _text_named_rgb = infer_named_color_from_text(compact_prompt(intent.color, intent.design, user_query))
 
     if design_similarity_mode and not has_color_condition:
         enhanced_query = f"a photo of {en_clothing_label}"
@@ -3629,7 +3699,10 @@ def build_enhanced_query(
         text_weight = 0.10
         image_weight = 0.90
     elif intent.color_mode == "target" and has_color_request and not has_design_request:
-        enhanced_query = f"a photo of {intent.color} {en_clothing_label}"
+        enhanced_query = compact_prompt(
+            "a photo of",
+            denim_enhanced_query_prompt(query_color_prompt, "", en_clothing_label, user_query),
+        )
         text_weight = 0.45
         image_weight = 0.55
     elif intent.color_mode == "same" and not has_design_request:
@@ -3642,7 +3715,7 @@ def build_enhanced_query(
         image_weight = 0.40 if has_color_request else 0.45
     elif has_design_request and not has_color_request:
         enhanced_query = (
-            compact_prompt("a photo of", denim_enhanced_query_prompt(query_color_prompt, intent.design, en_clothing_label))
+            compact_prompt("a photo of", denim_enhanced_query_prompt(query_color_prompt, intent.design, en_clothing_label, user_query))
             if intent.color_mode == "same" and query_color_prompt
             else compact_prompt(
                 "a photo of",
@@ -3650,6 +3723,7 @@ def build_enhanced_query(
                     intent.color if intent.color_mode == "different" else "",
                     intent.design,
                     en_clothing_label,
+                    user_query,
                 ),
             )
         )
@@ -3666,7 +3740,7 @@ def build_enhanced_query(
         color_prompt = intent.color if intent.color_mode in {"target", "different"} else ""
         enhanced_query = compact_prompt(
             "a photo of",
-            denim_enhanced_query_prompt(color_prompt, intent.design, en_clothing_label),
+            denim_enhanced_query_prompt(color_prompt, intent.design, en_clothing_label, user_query),
         )
         if intent.color_mode == "different":
             text_weight = 0.60
@@ -3681,7 +3755,7 @@ def build_enhanced_query(
         "image_weight": image_weight,
         "is_specific_query": is_specific_query,
         "design_similarity_mode": design_similarity_mode,
-        "query_detailed_color": resolve_detailed_color(color_result),
+        "query_detailed_color": text_named_color or resolve_detailed_color(color_result),
     }
 
 
@@ -4222,6 +4296,7 @@ async def search_clothes(
                 intent,
                 design_similarity_mode,
                 color_result if color_result.confidence in {"high", "medium"} else None,
+                user_query=query,
             )
             enhanced_query = query_build["enhanced_query"]
             text_weight = query_build["text_weight"]
