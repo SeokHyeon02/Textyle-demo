@@ -10,21 +10,21 @@ export default function TabLayout() {
         headerShown: false,
         headerTitleAlign: 'center',
       }}>
-      
+
       <Tabs.Screen
         name="index"
         options={{
           title: '검색',
-          tabBarIcon: ({ color, focused }) => 
+          tabBarIcon: ({ color, focused }) =>
             <Ionicons name={focused ? "search" : "search-outline"} size={26} color={color} />,
         }}
       />
-      
+
       <Tabs.Screen
         name="bookmarks"
         options={{
-          title: '찜',
-          tabBarIcon: ({ color, focused }) => 
+          title: '북마크',
+          tabBarIcon: ({ color, focused }) =>
             <Ionicons name={focused ? "heart" : "heart-outline"} size={26} color={color} />,
         }}
       />
@@ -33,16 +33,16 @@ export default function TabLayout() {
         name="guide"
         options={{
           title: '안내',
-          tabBarIcon: ({ color, focused }) => 
+          tabBarIcon: ({ color, focused }) =>
             <Ionicons name={focused ? "book" : "book-outline"} size={26} color={color} />,
         }}
       />
-      
+
       <Tabs.Screen
         name="login"
         options={{
-          title: '로그인',
-          tabBarIcon: ({ color, focused }) => 
+          title: 'MY',
+          tabBarIcon: ({ color, focused }) =>
             <Ionicons name={focused ? "person" : "person-outline"} size={26} color={color} />,
         }}
       />

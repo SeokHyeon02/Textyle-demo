@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
+import type { Session } from '@supabase/supabase-js';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
-import type { Session } from '@supabase/supabase-js';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -129,6 +129,7 @@ const getRankingLabels = (ranking?: RankingInfo): string[] => {
   return labels;
 };
 
+/*
 const formatTiming = (value?: number) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   return value >= 1000 ? `${(value / 1000).toFixed(1)}초` : `${Math.round(value)}ms`;
@@ -149,6 +150,7 @@ const getTimingRows = (timing?: SearchTiming) => {
     .map(([label, value]) => ({ label: label as string, value: formatTiming(value as number | undefined) }))
     .filter(row => row.value);
 };
+*/
 
 export default function SearchScreen() {
   const [session, setSession] = useState<Session | null>(null);
@@ -374,6 +376,7 @@ export default function SearchScreen() {
                       이미지 분석: {searchMetadata.query_image_attributes.image_preprocess_source === 'groundingdino_sam' ? '정밀 분석' : searchMetadata.query_image_attributes.image_preprocess_source}
                     </Text>
                   )}
+                  {/*
                   {searchMetadata.timing?.total_ms != null && (
                     <View style={styles.timingBlock}>
                       <Text style={styles.metadataRow}>
@@ -389,6 +392,7 @@ export default function SearchScreen() {
                       </View>
                     </View>
                   )}
+                  */}
                   {searchMetadata.search_warnings && searchMetadata.search_warnings.length > 0 && (
                     <View style={styles.warningsContainer}>
                       {searchMetadata.search_warnings.map((warning, idx) => (
@@ -465,29 +469,36 @@ export default function SearchScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.entryContent} keyboardShouldPersistTaps="handled">
-        <View style={styles.headerBlock}>
-          <Text style={styles.screenTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82}>
-            어떤 옷을 찾고 있나요?
-          </Text>
-          <Text style={styles.subtitle}>사진을 고르고 원하는 조건을 짧게 적어보세요.</Text>
+        <View style={styles.searchHomeHeader}>
+          <View style={styles.searchHomeTitleBlock}>
+            <Text style={styles.searchGreeting}>반가워요!</Text>
+            <Text style={styles.searchHomeTitle}>
+              원하는 의류를 찾아주는 Textyle입니다!.{'\n'}
+              이미지와 문장을 입력하면 비슷한 의류를 찾아드려요!
+            </Text>
+          </View>
         </View>
 
-        <TouchableOpacity style={styles.imageContainer} onPress={pickImage} activeOpacity={0.85}>
-          {imageUri ? (
-            <>
-              <Image source={{ uri: imageUri }} style={styles.imagePreview} />
-              <View style={styles.changeImageBadge}>
-                <Text style={styles.changeImageText}>사진 변경</Text>
-              </View>
-            </>
-          ) : (
-            <View style={styles.imagePlaceholder}>
-              <Ionicons name="image-outline" size={42} color="#5C5E62" />
-              <Text style={styles.imagePlaceholderTitle}>옷 사진 선택</Text>
-              <Text style={styles.imagePlaceholderBody}>비슷한 상품을 찾을 기준 이미지를 올려주세요.</Text>
-            </View>
-          )}
-        </TouchableOpacity>
+        <View style={styles.searchHeroCard}>
+          <View style={styles.searchHeroImageArea}>
+            <TouchableOpacity style={styles.searchHeroImagePicker} onPress={pickImage} activeOpacity={0.88}>
+              {imageUri ? (
+                <Image source={{ uri: imageUri }} style={styles.searchHeroPreview} resizeMode="contain" />
+              ) : (
+                <View style={styles.searchHeroIllustration}>
+                  <Ionicons name="shirt-outline" size={104} color="#8E8E8E" />
+                  <Text style={styles.searchHeroHint}>이미지를 선택하세요</Text>
+                  <View style={styles.sparkleOne}>
+                    <Ionicons name="sparkles" size={18} color="#3E6AE1" />
+                  </View>
+                  <View style={styles.sparkleTwo}>
+                    <Ionicons name="sparkles" size={16} color="#3E6AE1" />
+                  </View>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
 
         <TextInput
           style={styles.textInput}
@@ -522,18 +533,20 @@ export default function SearchScreen() {
         )}
 
         <TouchableOpacity
-          style={[styles.primaryButton, isLoading && styles.disabledButton]}
+          style={[styles.searchHeroButton, isLoading && styles.disabledButton]}
           onPress={searchClothes}
-          disabled={isLoading}>
+          disabled={isLoading}
+          activeOpacity={0.86}>
           {isLoading ? (
             <View style={styles.loadingRow}>
               <ActivityIndicator color="#fff" />
-              <Text style={styles.primaryButtonText}>{LOADING_MESSAGES[Math.min(loadingStage, LOADING_MESSAGES.length - 1)]}</Text>
+              <Text style={styles.searchHeroButtonText}>{LOADING_MESSAGES[Math.min(loadingStage, LOADING_MESSAGES.length - 1)]}</Text>
             </View>
           ) : (
-            <Text style={styles.primaryButtonText}>비슷한 옷 찾기</Text>
+            <Text style={styles.searchHeroButtonText}>검색하기</Text>
           )}
         </TouchableOpacity>
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -553,9 +566,8 @@ const styles = StyleSheet.create({
   },
   entryContent: {
     flexGrow: 1,
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 32,
+    paddingHorizontal: 24,
+    paddingTop: 64,
     paddingBottom: 32,
   },
   resultContent: {
@@ -604,52 +616,98 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     color: '#B42318',
   },
-  imageContainer: {
+  searchHomeHeader: {
     width: '100%',
     maxWidth: 430,
-    height: 270,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#EEEEEE',
-    backgroundColor: '#F4F4F4',
-    overflow: 'hidden',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+    marginBottom: 18,
   },
-  imagePlaceholder: {
-    alignItems: 'center',
-    paddingHorizontal: 28,
+  searchHomeTitleBlock: {
+    flex: 1,
   },
-  imagePlaceholderTitle: {
-    marginTop: 12,
-    fontSize: 17,
-    fontWeight: '600',
+  searchGreeting: {
     color: '#171A20',
+    fontSize: 22,
+    lineHeight: 29,
+    fontWeight: '600',
+    marginBottom: 4,
   },
-  imagePlaceholderBody: {
-    marginTop: 6,
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#5C5E62',
-    textAlign: 'center',
+  searchHomeTitle: {
+    color: '#171A20',
+    fontSize: 17,
+    lineHeight: 25,
+    fontWeight: '600',
   },
-  imagePreview: {
+  searchHeroCard: {
+    width: '100%',
+    maxWidth: 430,
+    alignSelf: 'center',
+    borderRadius: 8,
+    backgroundColor: '#F4F4F4',
+    alignItems: 'center',
+    padding: 16,
+    marginBottom: 18,
+  },
+  searchHeroImageArea: {
+    width: '100%',
+    height: 190,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  searchHeroImagePicker: {
     width: '100%',
     height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  changeImageBadge: {
-    position: 'absolute',
-    right: 12,
-    bottom: 12,
-    borderRadius: 4,
-    backgroundColor: 'rgba(255,255,255,0.92)',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+  searchHeroPreview: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 8,
   },
-  changeImageText: {
-    color: '#171A20',
+  searchHeroIllustration: {
+    width: 178,
+    height: 132,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  searchHeroHint: {
+    marginTop: -8,
+    color: '#8E8E8E',
     fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  sparkleOne: {
+    position: 'absolute',
+    left: 12,
+    top: 30,
+  },
+  sparkleTwo: {
+    position: 'absolute',
+    right: 14,
+    bottom: 30,
+  },
+  searchHeroButton: {
+    width: '100%',
+    maxWidth: 430,
+    alignSelf: 'center',
+    minHeight: 56,
+    borderRadius: 8,
+    backgroundColor: '#3E6AE1',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 20,
+  },
+  searchHeroButtonText: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    lineHeight: 24,
     fontWeight: '600',
   },
   textInput: {
