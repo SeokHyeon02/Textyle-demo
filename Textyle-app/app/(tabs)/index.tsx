@@ -1,8 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import type { Session } from '@supabase/supabase-js';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
+import type { Href } from 'expo-router';
 import { router } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,12 +19,15 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { addBookmark, fetchBookmarkedIds, removeBookmark } from '../../lib/bookmarks';
+import { consumeSearchPresetImage } from '../../lib/searchPreset';
 import { supabase } from '../../supabase';
 
 const FASHION_API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '');
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/200?text=No+Image';
 
 type SearchResult = {
+  id?: number | null;
   image_url?: string | null;
   main_category?: string | null;
   sub_category?: string | null;
@@ -164,6 +170,8 @@ export default function SearchScreen() {
   const [searchMetadata, setSearchMetadata] = useState<SearchMetadata | null>(null);
   const [loadingStage, setLoadingStage] = useState(0);
   const [useGroundingDino, setUseGroundingDino] = useState(false);
+  const [bookmarkedIds, setBookmarkedIds] = useState<Set<number>>(new Set());
+  const [togglingIds, setTogglingIds] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
@@ -171,6 +179,83 @@ export default function SearchScreen() {
 
     return () => data.subscription.unsubscribe();
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      const presetUrl = consumeSearchPresetImage();
+      if (presetUrl) {
+        setImageUri(presetUrl);
+        setSelectedImage(null);
+        setSearchText('');
+        setSearchResults([]);
+        setHasSearched(false);
+        setErrorMessage(null);
+        setSearchMetadata(null);
+      }
+    }, [])
+  );
+
+  useEffect(() => {
+    if (!session?.user?.id || searchResults.length === 0) {
+      setBookmarkedIds(new Set());
+      return;
+    }
+
+    let active = true;
+    fetchBookmarkedIds(session.user.id)
+      .then((ids) => {
+        if (active) setBookmarkedIds(new Set(ids));
+      })
+      .catch((error) => console.warn('찜 목록 조회 실패:', error));
+
+    return () => {
+      active = false;
+    };
+  }, [session?.user?.id, searchResults]);
+
+  const toggleBookmark = async (item: SearchResult) => {
+    const userId = session?.user?.id;
+    if (!userId) {
+      Alert.alert('알림', '찜하려면 로그인이 필요합니다.');
+      return;
+    }
+    if (item.id === null || item.id === undefined) {
+      Alert.alert('알림', '이 상품은 찜할 수 없습니다.');
+      return;
+    }
+
+    const clothId = item.id;
+    if (togglingIds.has(clothId)) return;
+
+    const wasBookmarked = bookmarkedIds.has(clothId);
+    setTogglingIds((prev) => new Set(prev).add(clothId));
+    setBookmarkedIds((prev) => {
+      const next = new Set(prev);
+      if (wasBookmarked) next.delete(clothId);
+      else next.add(clothId);
+      return next;
+    });
+
+    try {
+      if (wasBookmarked) await removeBookmark(userId, clothId);
+      else await addBookmark(userId, clothId);
+    } catch (error) {
+      setBookmarkedIds((prev) => {
+        const next = new Set(prev);
+        if (wasBookmarked) next.add(clothId);
+        else next.delete(clothId);
+        return next;
+      });
+      console.error('찜 처리 실패:', error);
+      Alert.alert('오류', '찜 처리에 실패했습니다. 잠시 후 다시 시도해주세요.');
+    } finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(clothId);
+        return next;
+      });
+    }
+  };
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -206,9 +291,17 @@ export default function SearchScreen() {
       }
 
       const formData = new FormData();
-      const uploadUri = selectedImage?.uri || imageUri;
-      const fileName = selectedImage?.fileName || 'photo.jpg';
-      const mimeType = selectedImage?.mimeType || 'image/jpeg';
+      let uploadUri = selectedImage?.uri || imageUri;
+      let fileName = selectedImage?.fileName || 'photo.jpg';
+      let mimeType = selectedImage?.mimeType || 'image/jpeg';
+
+      if (uploadUri && /^https?:\/\//.test(uploadUri)) {
+        const target = `${FileSystem.cacheDirectory}search-${Date.now()}.jpg`;
+        const downloaded = await FileSystem.downloadAsync(uploadUri, target);
+        uploadUri = downloaded.uri;
+        fileName = 'photo.jpg';
+        mimeType = 'image/jpeg';
+      }
 
       formData.append('file', {
         uri: uploadUri,
@@ -271,6 +364,20 @@ export default function SearchScreen() {
     } catch {
       Alert.alert('오류', '링크를 열 수 없습니다.');
     }
+  };
+
+  const openDetail = (item: SearchResult) => {
+    router.push({
+      pathname: '/product',
+      params: {
+        id: item.id != null ? String(item.id) : '',
+        imageUrl: item.image_url ?? '',
+        brand: item.brand_name ?? '',
+        name: item.name ?? '',
+        price: item.price != null ? String(item.price) : '',
+        shopLink: item.shop_link ?? '',
+      },
+    } as Href);
   };
 
   const getValidImageUrl = (url?: string | null) => {
@@ -407,9 +514,16 @@ export default function SearchScreen() {
 
               {searchResults.map((item, index) => {
                 const rankingLabels = getRankingLabels(item._ranking);
+                const canBookmark = item.id !== null && item.id !== undefined;
+                const isBookmarked = canBookmark && bookmarkedIds.has(item.id as number);
+                const isToggling = canBookmark && togglingIds.has(item.id as number);
 
                 return (
-                  <View key={`${item.name ?? 'result'}-${index}`} style={styles.resultCard}>
+                  <TouchableOpacity
+                    key={`${item.id ?? item.name ?? 'result'}-${index}`}
+                    style={styles.resultCard}
+                    activeOpacity={0.88}
+                    onPress={() => openDetail(item)}>
                     <View style={styles.resultImageFrame}>
                       <Image
                         source={{ uri: getValidImageUrl(item.image_url) }}
@@ -419,6 +533,20 @@ export default function SearchScreen() {
                       <View style={styles.rankBadge}>
                         <Text style={styles.rankBadgeText}>#{index + 1}</Text>
                       </View>
+                      {canBookmark && (
+                        <TouchableOpacity
+                          style={styles.heartButton}
+                          onPress={() => toggleBookmark(item)}
+                          disabled={isToggling}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          activeOpacity={0.8}>
+                          <Ionicons
+                            name={isBookmarked ? 'heart' : 'heart-outline'}
+                            size={21}
+                            color={isBookmarked ? '#EF4444' : '#FFFFFF'}
+                          />
+                        </TouchableOpacity>
+                      )}
                     </View>
                     <View style={styles.resultInfo}>
                       <View style={styles.resultTopLine}>
@@ -452,7 +580,7 @@ export default function SearchScreen() {
                         </View>
                       </TouchableOpacity>
                     </View>
-                  </View>
+                  </TouchableOpacity>
                 );
               })}
 
@@ -957,6 +1085,17 @@ const styles = StyleSheet.create({
     color: '#171A20',
     fontSize: 13,
     fontWeight: '600',
+  },
+  heartButton: {
+    position: 'absolute',
+    right: 12,
+    top: 12,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(0,0,0,0.42)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   resultInfo: {
     padding: 14,
