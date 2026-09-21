@@ -1,7 +1,6 @@
 import { router } from 'expo-router';
 import React, { useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { supabase } from '../supabase';
 
 export default function SignUpScreen() {
   const [email, setEmail] = useState('');
@@ -21,23 +20,33 @@ export default function SignUpScreen() {
     }
 
     setLoading(true);
-    const { error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          nickname,
+    
+    try {
+      const API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '') || 'http://localhost:8080/api';
+      const response = await fetch(`${API_URL}/auth/join`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
         },
-      },
-    });
+        body: JSON.stringify({
+          email: email.trim(),
+          password: password,
+          nickname: nickname.trim(),
+        }),
+      });
 
-    if (error) {
-      Alert.alert('회원가입 실패', error.message);
-    } else {
-      Alert.alert('가입 성공!', '환영합니다. 이제 로그인해주세요.', [
-        { text: '확인', onPress: () => router.replace('/login') },
-      ]);
+      if (response.ok) {
+        Alert.alert('가입 성공!', '환영합니다. 이제 로그인해주세요.', [
+          { text: '확인', onPress: () => router.replace('/login') },
+        ]);
+      } else {
+        const errorData = await response.json();
+        Alert.alert('회원가입 실패', errorData.error || '가입 중 오류가 발생했습니다.');
+      }
+    } catch (e) {
+      Alert.alert('네트워크 오류', '서버와 통신할 수 없습니다.');
     }
+    
     setLoading(false);
   };
 

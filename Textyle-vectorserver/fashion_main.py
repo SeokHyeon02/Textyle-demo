@@ -490,6 +490,12 @@ FASHION_IMAGE_LABELS = [
     "clothing",
     "shirt",
     "pants",
+    "shorts",
+    "leggings",
+    "underwear",
+    "swimwear",
+    "knitwear",
+    "graphic tee",
     "jacket",
     "dress",
     "skirt",
@@ -507,18 +513,18 @@ NON_FASHION_IMAGE_LABELS = [
     "room",
     "furniture",
     "building",
-    "face",
-    "human face",
+    "a close-up photo of a human face",
+    "a photo of naked human skin",
     "portrait",
     "selfie",
     "headshot",
     "person",
 ]
 
-FACE_DOMINANT_LABELS = {"face", "human face", "portrait", "selfie", "headshot", "person"}
+FACE_DOMINANT_LABELS = {"a close-up photo of a human face", "a photo of naked human skin", "portrait", "selfie", "headshot", "person"}
 MIN_FASHION_IMAGE_SCORE = 0.33
 MIN_FASHION_NON_FASHION_MARGIN = 0.08
-MIN_FACE_REJECT_SCORE = 0.18
+MIN_FACE_REJECT_SCORE = 0.25
 MIN_COLOR_PIXEL_COUNT = 80
 HIGH_COLOR_RATIO = 0.45
 MEDIUM_COLOR_RATIO = 0.30
@@ -4155,9 +4161,28 @@ async def search_clothes(
     query: str = Form(None),
     use_grounding_dino: bool = Form(False),
 ):
+    # 1. 텍스트 보안 검증
+    if query:
+        query = query.strip()
+        if len(query) > 100:
+            raise HTTPException(status_code=400, detail="검색어가 너무 깁니다. (최대 100자)")
+        
+        prompt_injection_pattern = re.compile(r"(?i)(system prompt|bypass|시스템 프롬프트|명령어 해제|ignore previous instructions)")
+        sql_xss_pattern = re.compile(r"(?i)(drop table|select \*|delete from|insert into|<script>|javascript:)")
+        
+        if prompt_injection_pattern.search(query):
+            raise HTTPException(status_code=400, detail="허용되지 않는 시스템 프롬프트 조작 패턴입니다.")
+        if sql_xss_pattern.search(query):
+            raise HTTPException(status_code=400, detail="유효하지 않은 특수문자나 명령어가 포함되어 있습니다.")
+
+    # 2. 이미지 용량 검증 (5MB 제한 예시)
     if not file:
         raise HTTPException(status_code=400, detail="image is required")
-
+    
+    content = await file.read()
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="허용된 이미지 용량(5MB)을 초과했습니다.")
+    
     try:
         t_start = time.perf_counter()
         timing_acc = {
@@ -4168,7 +4193,7 @@ async def search_clothes(
         }
         query = (query or "").strip()
         image_only_search = not query
-        content = await file.read()
+        # 삭제
         try:
             image_obj = Image.open(io.BytesIO(content)).convert("RGB")
         except UnidentifiedImageError:
@@ -4187,7 +4212,8 @@ async def search_clothes(
         t_validate = time.perf_counter()
         if not fashion_validation.is_fashion:
             print(f"[Timing] total={elapsed_ms(t_start, t_validate)}ms, validate={elapsed_ms(t_start, t_validate)}ms")
-            raise HTTPException(status_code=400, detail="\uc758\ub958\uac00 \uba85\ud655\ud788 \ubcf4\uc774\ub294 \uc774\ubbf8\uc9c0\ub97c \uc5c5\ub85c\ub4dc\ud574\uc8fc\uc138\uc694.")
+            print(f"[Warning] 이미지 검증 실패({fashion_validation.reason}) - 그래도 검색을 강행합니다.")
+            # raise HTTPException(status_code=400, detail="\uc758\ub958\uac00 \uba85\ud655\ud788 \ubcf4\uc774\ub294 \uc774\ubbf8\uc9c0\ub97c \uc5c5\ub85c\ub4dc\ud574\uc8fc\uc138\uc694.")
 
         t_embedding_start = time.perf_counter()
         original_image_features = get_image_embedding(image_obj)

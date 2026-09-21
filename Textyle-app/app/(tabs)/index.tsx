@@ -11,6 +11,7 @@ import {
   Alert,
   Image,
   Linking,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -135,31 +136,7 @@ const getRankingLabels = (ranking?: RankingInfo): string[] => {
   return labels;
 };
 
-/*
-const formatTiming = (value?: number) => {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}초` : `${Math.round(value)}ms`;
-};
-
-const getTimingRows = (timing?: SearchTiming) => {
-  if (!timing) return [];
-
-  return [
-    ['검증', timing.validate_ms],
-    ['쿼리 해석', timing.query_analysis_ms],
-    ['Gemini', timing.gemini_ms],
-    ['DINO/SAM', timing.dino_sam_ms],
-    ['임베딩', timing.embedding_ms],
-    ['DB 검색', timing.rpc_ms],
-    ['재정렬', timing.rerank_ms],
-  ]
-    .map(([label, value]) => ({ label: label as string, value: formatTiming(value as number | undefined) }))
-    .filter(row => row.value);
-};
-*/
-
 export default function SearchScreen() {
-  const [session, setSession] = useState<Session | null>(null);
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [searchText, setSearchText] = useState('');
@@ -169,16 +146,18 @@ export default function SearchScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [searchMetadata, setSearchMetadata] = useState<SearchMetadata | null>(null);
   const [loadingStage, setLoadingStage] = useState(0);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [useGroundingDino, setUseGroundingDino] = useState(false);
   const [bookmarkedIds, setBookmarkedIds] = useState<Set<number>>(new Set());
   const [togglingIds, setTogglingIds] = useState<Set<number>>(new Set());
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => setSession(session));
-
-    return () => data.subscription.unsubscribe();
-  }, []);
+  const checkLoginStatus = async () => {
+    const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+    const token = await AsyncStorage.getItem('userToken');
+    const loggedIn = !!token;
+    setIsLoggedIn(loggedIn);
+    return loggedIn;
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -192,39 +171,37 @@ export default function SearchScreen() {
         setErrorMessage(null);
         setSearchMetadata(null);
       }
-    }, [])
+
+      let active = true;
+      checkLoginStatus().then((loggedIn) => {
+        if (!active) return;
+        if (!loggedIn || searchResults.length === 0) {
+          setBookmarkedIds(new Set());
+          return;
+        }
+
+        fetchBookmarkedIds('dummy')
+          .then((ids) => {
+            if (active) setBookmarkedIds(new Set(ids));
+          })
+          .catch((error) => console.warn('찜 목록 조회 실패:', error));
+      });
+
+      return () => {
+        active = false;
+      };
+    }, [searchResults])
   );
 
-  useEffect(() => {
-    if (!session?.user?.id || searchResults.length === 0) {
-      setBookmarkedIds(new Set());
-      return;
-    }
-
-    let active = true;
-    fetchBookmarkedIds(session.user.id)
-      .then((ids) => {
-        if (active) setBookmarkedIds(new Set(ids));
-      })
-      .catch((error) => console.warn('찜 목록 조회 실패:', error));
-
-    return () => {
-      active = false;
-    };
-  }, [session?.user?.id, searchResults]);
-
   const toggleBookmark = async (item: SearchResult) => {
-    const userId = session?.user?.id;
-    if (!userId) {
+    if (!isLoggedIn) {
       Alert.alert('알림', '찜하려면 로그인이 필요합니다.');
-      return;
-    }
-    if (item.id === null || item.id === undefined) {
-      Alert.alert('알림', '이 상품은 찜할 수 없습니다.');
+      router.push('/login');
       return;
     }
 
     const clothId = item.id;
+    if (clothId == null) return;
     if (togglingIds.has(clothId)) return;
 
     const wasBookmarked = bookmarkedIds.has(clothId);
@@ -237,8 +214,8 @@ export default function SearchScreen() {
     });
 
     try {
-      if (wasBookmarked) await removeBookmark(userId, clothId);
-      else await addBookmark(userId, clothId);
+      if (wasBookmarked) await removeBookmark('dummy', clothId);
+      else await addBookmark('dummy', clothId);
     } catch (error) {
       setBookmarkedIds((prev) => {
         const next = new Set(prev);
@@ -246,8 +223,8 @@ export default function SearchScreen() {
         else next.delete(clothId);
         return next;
       });
-      console.error('찜 처리 실패:', error);
-      Alert.alert('오류', '찜 처리에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      console.error('북마크 토글 실패:', error);
+      Alert.alert('오류', '찜 설정에 실패했습니다. 다시 시도해주세요.');
     } finally {
       setTogglingIds((prev) => {
         const next = new Set(prev);
@@ -260,8 +237,8 @@ export default function SearchScreen() {
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
-      allowsEditing: false,
-      quality: 1,
+      allowsEditing: true, // 사용자가 필요한 옷 부분만 자르도록 유도
+      quality: 0.6,        // 0.0 ~ 1.0 사이값. 0.6 정도로 압축하여 5MB 방어
       preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Automatic,
     });
 
@@ -290,40 +267,60 @@ export default function SearchScreen() {
         throw new Error('EXPO_PUBLIC_FASHION_API_URL 환경변수가 설정되지 않았습니다.');
       }
 
-      const formData = new FormData();
       let uploadUri = selectedImage?.uri || imageUri;
-      let fileName = selectedImage?.fileName || 'photo.jpg';
       let mimeType = selectedImage?.mimeType || 'image/jpeg';
 
       if (uploadUri && /^https?:\/\//.test(uploadUri)) {
         const target = `${FileSystem.cacheDirectory}search-${Date.now()}.jpg`;
         const downloaded = await FileSystem.downloadAsync(uploadUri, target);
         uploadUri = downloaded.uri;
-        fileName = 'photo.jpg';
         mimeType = 'image/jpeg';
       }
 
-      formData.append('file', {
-        uri: uploadUri,
-        name: fileName,
-        type: mimeType,
-      } as any);
+      // 🔍 [프론트엔드 최종 검증] 백엔드로 쏘기 전 실제 파일 정보를 터미널에 출력합니다.
+      const fileInfo = await FileSystem.getInfoAsync(uploadUri);
+      console.log(`\n=== [프론트엔드 전송 전 검증] ===`);
+      console.log(`경로: ${uploadUri}`);
+      console.log(`크기: ${fileInfo.exists ? fileInfo.size : '파일 없음'} bytes`);
+      console.log(`===================================\n`);
 
-      formData.append('query', searchText.trim());
-      formData.append('use_grounding_dino', useGroundingDino ? 'true' : 'false');
-
-      const response = await fetch(`${FASHION_API_URL}/search`, {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => null);
-        throw new Error(errorData?.detail || '검색 요청을 처리하지 못했습니다.');
+      if (!fileInfo.exists || fileInfo.size === 0) {
+        throw new Error('아이패드에서 이미지 파일을 읽을 수 없거나 용량이 0바이트입니다.');
       }
 
-      const data = await response.json();
-      setSearchResults(Array.isArray(data.results) ? data.results : []);
+      // Native FileSystem 통신 방식
+      const response = await FileSystem.uploadAsync(
+        `${FASHION_API_URL}/search`,
+        uploadUri,
+        {
+          httpMethod: 'POST',
+          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+          fieldName: 'file',
+          mimeType: mimeType,
+          parameters: {
+            query: searchText.trim(),
+            use_grounding_dino: useGroundingDino ? 'true' : 'false',
+          },
+        }
+      );
+
+      if (response.status !== 200) {
+        let errorDetail = '검색 요청을 처리하지 못했습니다.';
+        try {
+          const errorData = JSON.parse(response.body);
+          if (errorData.detail) errorDetail = errorData.detail;
+        } catch (e) {}
+        throw new Error(errorDetail);
+      }
+
+      let data;
+      try {
+        data = JSON.parse(response.body);
+      } catch (error) {
+        throw new Error('서버로부터 올바른 형식의 응답을 받지 못했습니다. (데이터 파싱 오류)');
+      }
+      
+      setSearchResults(Array.isArray(data?.results) ? data.results : []);
       setSearchMetadata({
         enhanced_query: data.enhanced_query,
         color_extracted: data.color_extracted,
@@ -412,7 +409,7 @@ export default function SearchScreen() {
     setUseGroundingDino(false);
   };
 
-  if (!session) {
+  if (!isLoggedIn) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.centerContainer}>
@@ -483,23 +480,6 @@ export default function SearchScreen() {
                       이미지 분석: {searchMetadata.query_image_attributes.image_preprocess_source === 'groundingdino_sam' ? '정밀 분석' : searchMetadata.query_image_attributes.image_preprocess_source}
                     </Text>
                   )}
-                  {/*
-                  {searchMetadata.timing?.total_ms != null && (
-                    <View style={styles.timingBlock}>
-                      <Text style={styles.metadataRow}>
-                        응답 시간: {formatTiming(searchMetadata.timing.total_ms)}
-                      </Text>
-                      <View style={styles.timingGrid}>
-                        {getTimingRows(searchMetadata.timing).map(row => (
-                          <View key={row.label} style={styles.timingPill}>
-                            <Text style={styles.timingLabel}>{row.label}</Text>
-                            <Text style={styles.timingValue}>{row.value}</Text>
-                          </View>
-                        ))}
-                      </View>
-                    </View>
-                  )}
-                  */}
                   {searchMetadata.search_warnings && searchMetadata.search_warnings.length > 0 && (
                     <View style={styles.warningsContainer}>
                       {searchMetadata.search_warnings.map((warning, idx) => (
@@ -601,7 +581,7 @@ export default function SearchScreen() {
           <View style={styles.searchHomeTitleBlock}>
             <Text style={styles.searchGreeting}>반가워요!</Text>
             <Text style={styles.searchHomeTitle}>
-              원하는 의류를 찾아주는 Textyle입니다!.{'\n'}
+              원하는 의류를 찾아주는 Textyle입니다!{'\n'}
               이미지와 문장을 입력하면 비슷한 의류를 찾아드려요!
             </Text>
           </View>

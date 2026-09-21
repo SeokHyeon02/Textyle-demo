@@ -23,24 +23,25 @@ import { supabase } from '../../supabase';
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/200?text=No+Image';
 
 export default function BookmarksScreen() {
-  const [session, setSession] = useState<Session | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [bookmarks, setBookmarks] = useState<BookmarkRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [removingIds, setRemovingIds] = useState<Set<number>>(new Set());
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => setSession(session));
-
-    return () => data.subscription.unsubscribe();
-  }, []);
+  const checkLoginStatus = async () => {
+    const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+    const token = await AsyncStorage.getItem('userToken');
+    const loggedIn = !!token;
+    setIsLoggedIn(loggedIn);
+    return loggedIn;
+  };
 
   const loadBookmarks = useCallback(
     async (mode: 'initial' | 'refresh' = 'initial') => {
-      const userId = session?.user?.id;
-      if (!userId) {
+      const loggedIn = await checkLoginStatus();
+      if (!loggedIn) {
         setBookmarks([]);
         return;
       }
@@ -50,20 +51,19 @@ export default function BookmarksScreen() {
       setErrorMessage(null);
 
       try {
-        const rows = await fetchBookmarks(userId);
+        const rows = await fetchBookmarks('dummy-id');
         setBookmarks(rows);
-      } catch (error) {
-        console.error('찜 목록 조회 실패:', error);
-        setErrorMessage('찜 목록을 불러오지 못했습니다. 아래로 당겨 새로고침해주세요.');
+      } catch (error: any) {
+        setErrorMessage(error.message || '데이터를 불러오지 못했습니다.');
       } finally {
         setLoading(false);
         setRefreshing(false);
       }
     },
-    [session?.user?.id]
+    []
   );
 
-  // 탭에 들어올 때마다 최신 찜 목록을 가져온다 (검색 탭에서 찜한 내용이 바로 반영되도록).
+  // 탭에 들어올 때마다 최신 상태와 찜 목록을 가져온다
   useFocusEffect(
     useCallback(() => {
       loadBookmarks('initial');
@@ -71,19 +71,18 @@ export default function BookmarksScreen() {
   );
 
   const handleRemove = async (clothId: number) => {
-    const userId = session?.user?.id;
-    if (!userId || removingIds.has(clothId)) return;
+    if (!isLoggedIn || removingIds.has(clothId)) return;
 
     const snapshot = bookmarks;
     setRemovingIds((prev) => new Set(prev).add(clothId));
     setBookmarks((prev) => prev.filter((row) => row.cloth_id !== clothId)); // 낙관적 제거
 
     try {
-      await removeBookmark(userId, clothId);
+      await removeBookmark('dummy-id', clothId);
     } catch (error) {
-      setBookmarks(snapshot); // 롤백
       console.error('찜 해제 실패:', error);
-      Alert.alert('오류', '찜 해제에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      Alert.alert('찜 해제 실패', '문제가 발생했습니다. 다시 시도해주세요.');
+      setBookmarks(snapshot); // 롤백
     } finally {
       setRemovingIds((prev) => {
         const next = new Set(prev);
@@ -149,7 +148,7 @@ export default function BookmarksScreen() {
     return Number.isFinite(numericPrice) ? `${numericPrice.toLocaleString()}원` : String(price);
   };
 
-  if (!session) {
+  if (!isLoggedIn) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.centerContainer}>
