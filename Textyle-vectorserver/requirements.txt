@@ -23,3 +23,5 @@ fashion-clip>=0.1.1
 rembg>=2.0.0
 
 segment-anything
+
+python-multipart
