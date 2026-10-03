@@ -1,9 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import type { Session } from '@supabase/supabase-js';
 import type { Href } from 'expo-router';
 import { router } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -31,9 +30,12 @@ export default function BookmarksScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const checkLoginStatus = async () => {
-    const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
-    const token = await AsyncStorage.getItem('userToken');
-    const loggedIn = !!token;
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    const loggedIn = !!session;
+
     setIsLoggedIn(loggedIn);
     return loggedIn;
   };
@@ -51,7 +53,7 @@ export default function BookmarksScreen() {
       setErrorMessage(null);
 
       try {
-        const rows = await fetchBookmarks('dummy-id');
+        const rows = await fetchBookmarks();
         setBookmarks(rows);
       } catch (error: any) {
         setErrorMessage(error.message || '데이터를 불러오지 못했습니다.');
@@ -78,7 +80,7 @@ export default function BookmarksScreen() {
     setBookmarks((prev) => prev.filter((row) => row.cloth_id !== clothId)); // 낙관적 제거
 
     try {
-      await removeBookmark('dummy-id', clothId);
+      await removeBookmark(clothId);
     } catch (error) {
       console.error('찜 해제 실패:', error);
       Alert.alert('찜 해제 실패', '문제가 발생했습니다. 다시 시도해주세요.');

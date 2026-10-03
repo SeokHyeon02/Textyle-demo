@@ -1,4 +1,3 @@
-import { supabase } from '../supabase';
 
 export type Product = {
   id: number;
@@ -6,71 +5,66 @@ export type Product = {
   brand_name: string | null;
   name: string | null;
   price: number | string | null;
+  main_category: string | null;
   sub_category: string | null;
   shop_link: string | null;
 };
 
 export const HOME_PAGE_SIZE = 20;
 
-const PRODUCT_COLUMNS = 'id, image_url, brand_name, name, price, sub_category, shop_link';
+const API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '');
 
 let categoriesCache: string[] | null = null;
 
 // 카테고리(sub_category) 목록.
-// 빠른 경로는 RPC(get_sub_categories) 이고, 아직 만들지 않았으면 클라이언트 스캔으로 폴백한다.
+// Spring API를 통해 카테고리(sub_category) 목록을 가져온다.
 export async function fetchCategories(): Promise<string[]> {
   if (categoriesCache) return categoriesCache;
 
-  const { data, error } = await supabase.rpc('get_sub_categories');
-  if (!error && Array.isArray(data)) {
-    categoriesCache = (data as { sub_category: string | null }[])
-      .map((row) => row.sub_category)
-      .filter((value): value is string => !!value);
-    return categoriesCache;
+  if (!API_URL) {
+    throw new Error('EXPO_PUBLIC_FASHION_API_URL 환경변수가 설정되지 않았습니다.');
   }
 
-  categoriesCache = await scanDistinctCategories();
-  return categoriesCache;
-}
+  const response = await fetch(
+    `${API_URL}/api/products/categories`
+  );
 
-// RPC가 없을 때: clothes 의 sub_category 컬럼만 페이지로 훑어 중복 제거.
-async function scanDistinctCategories(): Promise<string[]> {
-  const seen = new Set<string>();
-  const step = 1000;
-  let from = 0;
-
-  for (let i = 0; i < 20; i++) {
-    const { data, error } = await supabase
-      .from('clothes')
-      .select('sub_category')
-      .range(from, from + step - 1);
-
-    if (error) throw error;
-    const rows = (data ?? []) as { sub_category: string | null }[];
-    for (const row of rows) {
-      if (row.sub_category) seen.add(row.sub_category);
-    }
-    if (rows.length < step) break;
-    from += step;
+  if (!response.ok) {
+    throw new Error('카테고리 조회에 실패했습니다.');
   }
 
-  return Array.from(seen);
+  const data: string[] = await response.json();
+
+  categoriesCache = data;
+  return data;
 }
 
-// 카테고리별 상품을 페이지 단위로 가져온다. category 가 null 이면 전체.
+
+// Spring API를 통해 카테고리별 상품을 페이지 단위로 가져온다.
+// category가 null이면 전체 상품을 조회한다.
 // 반환 개수가 HOME_PAGE_SIZE 보다 작으면 더 이상 없음.
 export async function fetchProducts(category: string | null, page: number): Promise<Product[]> {
-  let query = supabase
-    .from('clothes')
-    .select(PRODUCT_COLUMNS)
-    .order('id', { ascending: false })
-    .range(page * HOME_PAGE_SIZE, page * HOME_PAGE_SIZE + HOME_PAGE_SIZE - 1);
-
-  if (category) {
-    query = query.eq('sub_category', category);
+  if (!API_URL) {
+    throw new Error('EXPO_PUBLIC_FASHION_API_URL 환경변수가 설정되지 않았습니다.');
   }
 
-  const { data, error } = await query;
-  if (error) throw error;
-  return (data ?? []) as Product[];
+  const params = new URLSearchParams({
+    page: String(page),
+  });
+
+  if (category) {
+    params.append('category', category);
+  }
+
+  const response = await fetch(
+    `${API_URL}/api/products?${params.toString()}`
+  );
+
+  if (!response.ok) {
+    throw new Error('상품 조회에 실패했습니다.');
+  }
+
+  const data = await response.json();
+
+  return data.content ?? [];
 }

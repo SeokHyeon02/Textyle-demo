@@ -1,6 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import type { Session } from '@supabase/supabase-js';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import type { Href } from 'expo-router';
@@ -152,9 +151,19 @@ export default function SearchScreen() {
   const [togglingIds, setTogglingIds] = useState<Set<number>>(new Set());
 
   const checkLoginStatus = async () => {
-    const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
-    const token = await AsyncStorage.getItem('userToken');
-    const loggedIn = !!token;
+    const {
+      data: { session },
+      error,
+    } = await supabase.auth.getSession();
+
+    if (error) {
+      console.error('로그인 상태 확인 실패:', error);
+      setIsLoggedIn(false);
+      return false;
+    }
+
+    const loggedIn = !!session;
+
     setIsLoggedIn(loggedIn);
     return loggedIn;
   };
@@ -180,7 +189,7 @@ export default function SearchScreen() {
           return;
         }
 
-        fetchBookmarkedIds('dummy')
+        fetchBookmarkedIds()
           .then((ids) => {
             if (active) setBookmarkedIds(new Set(ids));
           })
@@ -214,8 +223,8 @@ export default function SearchScreen() {
     });
 
     try {
-      if (wasBookmarked) await removeBookmark('dummy', clothId);
-      else await addBookmark('dummy', clothId);
+      if (wasBookmarked) await removeBookmark(clothId);
+      else await addBookmark(clothId);
     } catch (error) {
       setBookmarkedIds((prev) => {
         const next = new Set(prev);
@@ -289,14 +298,23 @@ export default function SearchScreen() {
       }
 
       // Native FileSystem 통신 방식
+
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (!session) {
+        throw new Error('로그인이 필요합니다.');
+      }
       const response = await FileSystem.uploadAsync(
-        `${FASHION_API_URL}/search`,
+        `${FASHION_API_URL}/api/search`,
         uploadUri,
         {
           httpMethod: 'POST',
           uploadType: FileSystem.FileSystemUploadType.MULTIPART,
           fieldName: 'file',
           mimeType: mimeType,
+           headers: {
+            Authorization: `Bearer ${session.access_token}`,
+        },
           parameters: {
             query: searchText.trim(),
             use_grounding_dino: useGroundingDino ? 'true' : 'false',

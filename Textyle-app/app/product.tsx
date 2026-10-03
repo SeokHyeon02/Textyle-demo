@@ -73,7 +73,7 @@ export default function ProductDetailScreen() {
     const userId = session?.user?.id;
     if (!userId || clothId === null) return;
     let active = true;
-    fetchBookmarkedIds(userId)
+    fetchBookmarkedIds()
       .then((ids) => {
         if (active) setBookmarked(ids.includes(clothId));
       })
@@ -110,8 +110,8 @@ export default function ProductDetailScreen() {
     setBookmarked(!wasBookmarked); // 낙관적 업데이트
 
     try {
-      if (wasBookmarked) await removeBookmark(userId, clothId);
-      else await addBookmark(userId, clothId);
+      if (wasBookmarked) await removeBookmark(clothId);
+      else await addBookmark(clothId);
     } catch (error) {
       setBookmarked(wasBookmarked); // 롤백
       console.error('찜 처리 실패:', error);
