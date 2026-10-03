@@ -79,8 +79,16 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Loading FashionCLIP... model={FASHION_CLIP_MODEL_ID}, device={device}")
 fclip = FashionCLIP(FASHION_CLIP_API_MODEL_ID)
 print(f"FashionCLIP API loaded: {FASHION_CLIP_API_MODEL_ID}")
-model = CLIPModel.from_pretrained(FASHION_CLIP_MODEL_ID).to(device)
-processor = CLIPProcessor.from_pretrained(FASHION_CLIP_MODEL_ID)
+# fclip이 이미 같은 FashionCLIP 모델을 메모리에 올려 두었다면 다시 불러오지 않고 재사용한다.
+# (같은 가중치를 두 번 올리던 것을 한 번으로 줄여 메모리 약 0.6GB 절약, 결과는 동일)
+# FASHION_CLIP_MODEL_ID를 다른 모델로 지정한 경우에만 기존처럼 따로 불러온다.
+_FCLIP_API_MODEL_ALIASES = {"fashion-clip": "patrickjohncyh/fashion-clip"}
+if _FCLIP_API_MODEL_ALIASES.get(FASHION_CLIP_API_MODEL_ID, FASHION_CLIP_API_MODEL_ID) == FASHION_CLIP_MODEL_ID:
+    model = fclip.model
+    processor = fclip.preprocess
+else:
+    model = CLIPModel.from_pretrained(FASHION_CLIP_MODEL_ID).to(device)
+    processor = CLIPProcessor.from_pretrained(FASHION_CLIP_MODEL_ID)
 model.eval()
 print("FashionCLIP loaded")
 
