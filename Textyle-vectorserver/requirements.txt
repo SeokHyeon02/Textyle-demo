@@ -6,7 +6,7 @@ pydantic>=2.0.0
 
 torch>=2.0.0
 
-transformers>=4.30.0
+transformers>=4.30.0,<5
 
 supabase>=2.0.0
 
