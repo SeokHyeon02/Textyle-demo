@@ -1,3 +1,4 @@
+import asyncio
 import io
 import time
 import importlib
@@ -5,6 +6,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 import traceback
 from dataclasses import dataclass, field
 from math import sqrt
@@ -24,6 +26,7 @@ import torch
 import torch.nn.functional as F
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from supabase import Client, create_client
@@ -64,7 +67,26 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY and genai else None
+# Gemini 응답 대기 시간 제한(ms). Gemini가 느리거나 멈춰도 이 시간이 지나면 규칙 기반 분석으로 넘어간다.
+# Gemini API는 10초 미만의 제한 시간을 거절하므로("Minimum allowed deadline is 10s") 10초보다 작게 잡지 않는다.
+GEMINI_TIMEOUT_MS = max(10_000, int(os.environ.get("GEMINI_TIMEOUT_MS", "12000")))
+
+
+def create_gemini_client():
+    if not GEMINI_API_KEY or not genai:
+        return None
+    try:
+        return genai.Client(
+            api_key=GEMINI_API_KEY,
+            http_options=genai_types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+        )
+    except Exception as exc:
+        # 설치된 google-genai 버전이 timeout 옵션을 지원하지 않으면 기존 방식(제한 시간 없음)으로 만든다.
+        print(f"Gemini timeout option unavailable, client created without timeout: {exc}")
+        return genai.Client(api_key=GEMINI_API_KEY)
+
+
+gemini_client = create_gemini_client()
 rembg_new_session = None
 rembg_remove = None
 rembg_loaded = False
@@ -72,6 +94,13 @@ segmentation_session = None
 segmentation_failed = False
 dino_sam_backend = None
 dino_sam_failed = False
+
+# /search의 무거운 작업은 별도 스레드에서 실행하고, 동시에 이 개수까지만 처리한다. 나머지 요청은 순서대로 기다린다.
+# GPU서버 이용 시 동시 실행 수 확장 가능 (환경변수 MAX_CONCURRENT_SEARCHES로도 변경할 수 있다).
+MAX_CONCURRENT_SEARCHES = max(1, int(os.environ.get("MAX_CONCURRENT_SEARCHES", "2")))
+search_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SEARCHES)
+# GroundingDINO/SAM은 모델 로딩과 내부 상태를 공유하므로 한 번에 한 요청만 사용한다.
+dino_sam_lock = threading.Lock()
 
 app = FastAPI(title="TexTyle FashionCLIP Search Server")
 
@@ -3021,7 +3050,7 @@ def extract_query_color_result(
     return fallback
 
 
-async def analyze_query(
+def analyze_query(
     user_query: str,
     rule_main_categories: list | None = None,
     rule_sub_categories: list | None = None,
@@ -3135,7 +3164,7 @@ Example:
 
 # analyze_query_intent는 하위 호환성을 위해 유지 (내부적으로 analyze_query 위임)
 async def analyze_query_intent(user_query: str) -> QueryIntent:
-    intent, _main, _sub = await analyze_query(user_query)
+    intent, _main, _sub = analyze_query(user_query)
     return intent
 
 
@@ -4191,6 +4220,27 @@ async def search_clothes(
     if len(content) > 5 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="허용된 이미지 용량(5MB)을 초과했습니다.")
     
+    # 3. 무거운 검색 작업(모델 계산, Gemini/Supabase 호출)은 별도 스레드에서 실행한다.
+    #    이벤트 루프를 붙잡지 않으므로 검색 중에도 /health 등 다른 요청이 응답한다.
+    #    동시에 MAX_CONCURRENT_SEARCHES개까지만 실행하고, 나머지는 도착한 순서대로 기다린다.
+    async with search_semaphore:
+        return await run_in_threadpool(
+            run_search,
+            content,
+            getattr(file, "filename", ""),
+            getattr(file, "content_type", ""),
+            query,
+            use_grounding_dino,
+        )
+
+
+def run_search(
+    content: bytes,
+    upload_filename: str,
+    upload_content_type: str,
+    query: Optional[str],
+    use_grounding_dino: bool,
+):
     try:
         t_start = time.perf_counter()
         timing_acc = {
@@ -4208,8 +4258,8 @@ async def search_clothes(
             t_invalid_image = time.perf_counter()
             print(
                 "Invalid upload image: "
-                f"filename={getattr(file, 'filename', '')}, "
-                f"content_type={getattr(file, 'content_type', '')}, "
+                f"filename={upload_filename}, "
+                f"content_type={upload_content_type}, "
                 f"size={len(content)}, "
                 f"head={content[:16].hex()}, "
                 f"total_ms={elapsed_ms(t_start, t_invalid_image)}"
@@ -4241,7 +4291,7 @@ async def search_clothes(
         else:
             # LLM이 category + intent를 한 번에 추론; 실패 시 룰 기반 fallback 자동 적용
             t_gemini_start = time.perf_counter()
-            intent, main_categories, sub_categories = await analyze_query(
+            intent, main_categories, sub_categories = analyze_query(
                 query,
                 rule_main_categories=rule_main_categories,
                 rule_sub_categories=rule_sub_categories,
@@ -4291,12 +4341,13 @@ async def search_clothes(
 
         t_dino_sam_start = time.perf_counter()
         if use_grounding_dino:
-            image_preprocess_result = preprocess_query_image_with_dino_sam(
-                image_obj,
-                clothing_label,
-                main_categories,
-                sub_categories,
-            )
+            with dino_sam_lock:
+                image_preprocess_result = preprocess_query_image_with_dino_sam(
+                    image_obj,
+                    clothing_label,
+                    main_categories,
+                    sub_categories,
+                )
             timing_acc["dino_sam_ms"] += elapsed_ms(t_dino_sam_start)
         else:
             image_preprocess_result = QueryImagePreprocessResult(image_obj, "original")
