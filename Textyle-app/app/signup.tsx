@@ -10,6 +10,9 @@ export default function SignUpScreen() {
   const [nickname, setNickname] = useState('');
 
   const handleSignUp = async () => {
+    console.log('🔥 handleSignUp 실행됨');
+
+    setLoading(true);
     if (!email || !password || !nickname) {
       Alert.alert('알림', '모든 정보를 입력해주세요.');
       return;
@@ -22,8 +25,10 @@ export default function SignUpScreen() {
     setLoading(true);
     
     try {
-      const API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '') || 'http://localhost:8080/api';
-      const response = await fetch(`${API_URL}/auth/join`, {
+      const API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '') || 'http://localhost:8080';
+
+      console.log('회원가입 URL:', `${API_URL}api/auth/join`);
+      const response = await fetch(`${API_URL}api/auth/join`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -34,6 +39,11 @@ export default function SignUpScreen() {
           nickname: nickname.trim(),
         }),
       });
+
+      console.log('회원가입 status:', response.status);
+
+    const responseText = await response.text();
+    console.log('회원가입 response:', responseText);
 
       if (response.ok) {
         Alert.alert('가입 성공!', '환영합니다. 이제 로그인해주세요.', [

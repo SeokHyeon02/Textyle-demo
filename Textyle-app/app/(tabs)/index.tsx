@@ -21,7 +21,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { addBookmark, fetchBookmarkedIds, removeBookmark } from '../../lib/bookmarks';
 import { consumeSearchPresetImage } from '../../lib/searchPreset';
-import { supabase } from '../../supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const FASHION_API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '');
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/200?text=No+Image';
@@ -151,21 +151,18 @@ export default function SearchScreen() {
   const [togglingIds, setTogglingIds] = useState<Set<number>>(new Set());
 
   const checkLoginStatus = async () => {
-    const {
-      data: { session },
-      error,
-    } = await supabase.auth.getSession();
+    try {
+    const token = await AsyncStorage.getItem('userToken');
 
-    if (error) {
+    const loggedIn = !!token;
+
+    setIsLoggedIn(loggedIn);
+    return loggedIn;
+    } catch (error) {
       console.error('로그인 상태 확인 실패:', error);
       setIsLoggedIn(false);
       return false;
     }
-
-    const loggedIn = !!session;
-
-    setIsLoggedIn(loggedIn);
-    return loggedIn;
   };
 
   useFocusEffect(
@@ -299,25 +296,26 @@ export default function SearchScreen() {
 
       // Native FileSystem 통신 방식
 
-      const { data: { session } } = await supabase.auth.getSession();
+      const token = await AsyncStorage.getItem('userToken');
 
-      if (!session) {
+      if (!token) {
         throw new Error('로그인이 필요합니다.');
       }
+
       const response = await FileSystem.uploadAsync(
-        `${FASHION_API_URL}/api/search`,
+  `     ${FASHION_API_URL}/api/search`,
         uploadUri,
         {
           httpMethod: 'POST',
           uploadType: FileSystem.FileSystemUploadType.MULTIPART,
           fieldName: 'file',
           mimeType: mimeType,
-           headers: {
-            Authorization: `Bearer ${session.access_token}`,
-        },
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
           parameters: {
-            query: searchText.trim(),
-            use_grounding_dino: useGroundingDino ? 'true' : 'false',
+          query: searchText.trim(),
+          use_grounding_dino: useGroundingDino ? 'true' : 'false',
           },
         }
       );

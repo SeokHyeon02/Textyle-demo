@@ -1,4 +1,4 @@
-import { supabase } from '../supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export type BookmarkClothes = {
   id: number;
@@ -20,17 +20,15 @@ export type BookmarkRow = {
 const getApiUrl = () => process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '') || 'http://localhost:8080';
 
 const getHeaders = async () => {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  const token = await AsyncStorage.getItem('userToken');
 
-  if (!session) {
+  if (!token) {
     throw new Error('로그인이 필요합니다.');
   }
 
   return {
     'Content-Type': 'application/json',
-    Authorization: `Bearer ${session.access_token}`,
+    Authorization: `Bearer ${token}`,
   };
 };
 

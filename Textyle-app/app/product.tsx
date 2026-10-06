@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { addBookmark, fetchBookmarkedIds, removeBookmark } from '../lib/bookmarks';
 import { setSearchPresetImage } from '../lib/searchPreset';
-import { supabase } from '../supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/400?text=No+Image';
 
@@ -37,7 +37,7 @@ export default function ProductDetailScreen() {
   const priceRaw = params.price || '';
   const shopLink = params.shopLink || '';
 
-  const [session, setSession] = useState<Session | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [bookmarked, setBookmarked] = useState(false);
   const [toggling, setToggling] = useState(false);
 
@@ -63,25 +63,35 @@ export default function ProductDetailScreen() {
   }, [backdropOpacity, cardTranslateY]);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
-    const { data } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
-    return () => data.subscription.unsubscribe();
+    const checkLoginStatus = async () => {
+      const token = await AsyncStorage.getItem('userToken');
+      setIsLoggedIn(!!token);
+    };
+
+    checkLoginStatus();
   }, []);
+
 
   // 현재 상품이 이미 찜되어 있는지 확인해 하트 상태를 맞춘다.
   useEffect(() => {
-    const userId = session?.user?.id;
-    if (!userId || clothId === null) return;
+    if (!isLoggedIn || clothId === null) return;
+
     let active = true;
+
     fetchBookmarkedIds()
       .then((ids) => {
-        if (active) setBookmarked(ids.includes(clothId));
+        if (active) {
+          setBookmarked(ids.includes(clothId));
+        }
       })
-      .catch((error) => console.warn('찜 상태 조회 실패:', error));
+      .catch((error) => {
+        console.warn('찜 상태 조회 실패:', error);
+      });
+
     return () => {
       active = false;
     };
-  }, [session?.user?.id, clothId]);
+  }, [isLoggedIn, clothId]);
 
   const getValidImageUrl = (url?: string | null) => {
     if (!url) return PLACEHOLDER_IMAGE_URL;
@@ -98,8 +108,7 @@ export default function ProductDetailScreen() {
   const close = () => router.back();
 
   const handleBookmark = async () => {
-    const userId = session?.user?.id;
-    if (!userId) {
+    if (!isLoggedIn) {
       Alert.alert('알림', '찜하려면 로그인이 필요합니다.');
       return;
     }

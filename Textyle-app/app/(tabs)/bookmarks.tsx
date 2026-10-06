@@ -17,6 +17,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BookmarkRow, fetchBookmarks, removeBookmark } from '../../lib/bookmarks';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../../supabase';
 
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/200?text=No+Image';
@@ -30,11 +31,9 @@ export default function BookmarksScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const checkLoginStatus = async () => {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const token = await AsyncStorage.getItem('userToken');
 
-    const loggedIn = !!session;
+    const loggedIn = !!token;
 
     setIsLoggedIn(loggedIn);
     return loggedIn;
