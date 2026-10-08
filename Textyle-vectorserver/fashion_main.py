@@ -1725,7 +1725,10 @@ def remove_denim_tone_words(design: str, tone: str) -> str:
         if re.search(r"[가-힣]", term):
             normalized = normalized.replace(term, " ")
         else:
-            normalized = re.sub(rf"\b{re.escape(term)}\b", " ", normalized)
+            # 여러 단어로 된 톤 표현은 띄어쓰기뿐 아니라 하이픈으로 붙은 형태도 지운다.
+            # 예: "medium-wash"가 "medium wash"로 지워지지 않고 "medium"만 지워져 "-wash"가 남던 문제
+            term_pattern = r"[\s-]+".join(re.escape(word) for word in term.split())
+            normalized = re.sub(rf"\b{term_pattern}\b", " ", normalized)
     return re.sub(r"\s+", " ", normalized).strip()
 
 
