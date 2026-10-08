@@ -3200,14 +3200,62 @@ def l2_normalize_array(embeddings):
     return array / np.linalg.norm(array, ord=2, axis=-1, keepdims=True)
 
 
-def encode_image_with_fashion_clip_api(image_obj: Image.Image):
+# FashionCLIP 임베딩
+# - DB의 fashion_embedding은 DB_data/update 스크립트에서 "JPEG(q95) 저장 -> fclip.encode_images"로 만들었다.
+# - fclip.encode_images/encode_text는 호출할 때마다 내부 datasets 처리(모델 전체 해시 계산)를 거쳐
+#   요청 1건당 CPU 약 1.6초, GPU 약 5초가 추가로 걸린다.
+# - 그래서 같은 JPEG(q95) 변환, 같은 전처리(fclip.preprocess), 같은 모델(fclip.model)을 직접 호출한다.
+#   기존 방식과 비교 결과: 임베딩 cos 최저 0.99999988, 검색 결과 상위 10개 50/50건 동일.
+# - 직접 호출에서 예외가 나면 그 요청만 기존 fashion-clip 방식으로 다시 계산한다(예비 경로).
+FASHION_CLIP_BATCH_SIZE = 32
+
+
+def _to_normalized_embedding_tensor(features):
+    # 기존과 같은 방식(numpy L2 정규화)으로 정규화한다.
+    embeddings = features.detach().cpu().numpy()
+    embeddings = embeddings / np.linalg.norm(embeddings, ord=2, axis=-1, keepdims=True)
+    return torch.from_numpy(embeddings).to(device)
+
+
+def _encode_image_direct(image_obj: Image.Image):
+    # DB 임베딩 생성과 같은 JPEG(q95) 변환을 파일 대신 메모리에서 수행한다(픽셀 동일).
+    buffer = io.BytesIO()
+    image_obj.convert("RGB").save(buffer, format="JPEG", quality=95)
+    buffer.seek(0)
+    jpeg_image = Image.open(buffer)
+    jpeg_image.load()
+    with torch.no_grad():
+        inputs = fclip.preprocess(images=[jpeg_image], return_tensors="pt")
+        inputs = {key: value.to(fclip.device) for key, value in inputs.items()}
+        features = fclip.model.get_image_features(**inputs)
+    return _to_normalized_embedding_tensor(features)
+
+
+def _encode_texts_direct(texts: list[str]):
+    outputs = []
+    with torch.no_grad():
+        for start in range(0, len(texts), FASHION_CLIP_BATCH_SIZE):
+            inputs = fclip.preprocess(
+                text=texts[start:start + FASHION_CLIP_BATCH_SIZE],
+                return_tensors="pt",
+                max_length=77,
+                padding="max_length",
+                truncation=True,
+            )
+            inputs = {key: value.to(fclip.device) for key, value in inputs.items()}
+            outputs.append(fclip.model.get_text_features(**inputs))
+    return _to_normalized_embedding_tensor(torch.cat(outputs))
+
+
+def _encode_image_with_fashion_clip_library(image_obj: Image.Image):
+    # 예비 경로: 기존 방식(임시 JPEG 파일 -> fclip.encode_images)
     rgb_image = image_obj.convert("RGB")
     fd, temp_path = tempfile.mkstemp(suffix=".jpg")
     os.close(fd)
     try:
         rgb_image.save(temp_path, format="JPEG", quality=95)
         images = [temp_path]
-        image_embeddings = fclip.encode_images(images, batch_size=32)
+        image_embeddings = fclip.encode_images(images, batch_size=FASHION_CLIP_BATCH_SIZE)
         image_embeddings = image_embeddings / np.linalg.norm(image_embeddings, ord=2, axis=-1, keepdims=True)
     finally:
         try:
@@ -3217,17 +3265,31 @@ def encode_image_with_fashion_clip_api(image_obj: Image.Image):
     return torch.from_numpy(image_embeddings).to(device)
 
 
-def encode_text_with_fashion_clip_api(text: str):
-    texts = [text]
-    text_embeddings = fclip.encode_text(texts, batch_size=32)
+def _encode_texts_with_fashion_clip_library(texts: list[str]):
+    # 예비 경로: 기존 방식(fclip.encode_text)
+    text_embeddings = fclip.encode_text(texts, batch_size=FASHION_CLIP_BATCH_SIZE)
     text_embeddings = text_embeddings / np.linalg.norm(text_embeddings, ord=2, axis=-1, keepdims=True)
     return torch.from_numpy(text_embeddings).to(device)
+
+
+def encode_image_with_fashion_clip_api(image_obj: Image.Image):
+    try:
+        return _encode_image_direct(image_obj)
+    except Exception as exc:
+        print(f"[Embedding] direct image encoding failed, fashion-clip fallback used: {exc}")
+        return _encode_image_with_fashion_clip_library(image_obj)
+
+
+def encode_text_with_fashion_clip_api(text: str):
+    return encode_texts_with_fashion_clip_api([text])
 
 
 def encode_texts_with_fashion_clip_api(texts: list[str]):
-    text_embeddings = fclip.encode_text(texts, batch_size=32)
-    text_embeddings = text_embeddings / np.linalg.norm(text_embeddings, ord=2, axis=-1, keepdims=True)
-    return torch.from_numpy(text_embeddings).to(device)
+    try:
+        return _encode_texts_direct(texts)
+    except Exception as exc:
+        print(f"[Embedding] direct text encoding failed, fashion-clip fallback used: {exc}")
+        return _encode_texts_with_fashion_clip_library(texts)
 
 
 def get_image_embedding(image_obj: Image.Image):
