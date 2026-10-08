@@ -256,6 +256,21 @@ LABEL_TO_EN = {
     "카고팬츠": "cargo pants",
     "숏팬츠": "shorts",
     "후드집업": "hooded zip-up jacket",
+    # 아래는 질의 문구에서는 나오지 않고 사진 기반 카테고리 보완(infer_fallback_category_from_image)으로만 들어오는 세부 카테고리
+    "셔츠": "shirt",
+    "피케/카라 티셔츠": "polo shirt",
+    "환절기 코트": "trench coat",
+    "플리스": "fleece jacket",
+    "경량패딩/패딩 베스트": "padded vest",
+    "겨울 싱글코트": "wool coat",
+    "무스탕": "shearling jacket",
+    "겨울 기타코트": "winter coat",
+    "롱패딩": "long puffer coat",
+    "숏패딩": "short puffer jacket",
+    "겨울 더블코트": "double-breasted coat",
+    "트러커자켓": "denim trucker jacket",
+    "코치자켓": "coach jacket",
+    "슈트/블레이저 자켓": "blazer",
 }
 
 COLOR_ALIASES = {
@@ -427,6 +442,53 @@ IMAGE_CATEGORY_PROMPTS = {
     ),
 }
 IMAGE_CATEGORY_PROMPT_EMBEDDING_CACHE = {}
+
+# 사진 기반 카테고리 보완: 질의 문구(Gemini + 규칙)에서 상위/세부 카테고리를 모두 못 정했을 때만 사용한다.
+# DB(무신사 분류)의 세부 카테고리 29개와 FashionCLIP 비교용 영어 설명.
+IMAGE_FALLBACK_CATEGORY_PROMPTS = {
+    "아우터": {
+        "가디건": ("cardigan",),
+        "환절기 코트": ("trench coat", "light spring coat"),
+        "플리스": ("fleece jacket",),
+        "경량패딩/패딩 베스트": ("lightweight padded jacket", "padded vest"),
+        "겨울 싱글코트": ("single-breasted wool coat",),
+        "무스탕": ("shearling mustang jacket",),
+        "겨울 기타코트": ("winter coat",),
+        "롱패딩": ("long puffer coat",),
+        "숏패딩": ("short puffer jacket",),
+        "겨울 더블코트": ("double-breasted wool coat",),
+        "후드집업": ("hooded zip-up jacket",),
+        "트러커자켓": ("denim trucker jacket",),
+        "블루종/MA-1": ("bomber jacket", "MA-1 flight jacket"),
+        "코치자켓": ("coach jacket",),
+        "레더자켓": ("leather jacket",),
+        "슈트/블레이저 자켓": ("blazer", "suit jacket"),
+        "사파리/헌팅자켓": ("safari jacket", "field jacket"),
+    },
+    "상의": {
+        "긴소매 티셔츠": ("long sleeve t-shirt",),
+        "스웻셔츠": ("sweatshirt",),
+        "셔츠": ("button-up shirt",),
+        "반소매 티셔츠": ("short sleeve t-shirt",),
+        "니트/스웨터": ("knit sweater",),
+        "피케/카라 티셔츠": ("polo shirt", "collared pique shirt"),
+        "후드티": ("hoodie",),
+    },
+    "하의": {
+        "데님팬츠": ("denim jeans",),
+        "트레이닝/조거 팬츠": ("jogger pants", "sweatpants"),
+        "코튼 팬츠": ("cotton chino pants",),
+        "슬랙스/슈트 팬츠": ("slacks", "suit trousers"),
+        "숏팬츠": ("shorts",),
+    },
+}
+IMAGE_FALLBACK_SUB_TO_MAIN = {
+    sub_category: main_category
+    for main_category, sub_prompts in IMAGE_FALLBACK_CATEGORY_PROMPTS.items()
+    for sub_category in sub_prompts
+}
+# 세부 카테고리는 CLIP 1위와 2위의 점수 차이가 이 값 이상일 때만 채운다 (테스트 사진 20장 기준으로 정한 값).
+IMAGE_FALLBACK_SUB_MARGIN = float(os.environ.get("IMAGE_FALLBACK_SUB_MARGIN", "0.04"))
 
 GROUNDING_DINO_PROMPTS_BY_LABEL = {
     "데님팬츠": "denim jeans",
@@ -3326,6 +3388,45 @@ def infer_image_category_from_features(image_features) -> ImageCategoryResult:
     ])
 
 
+def infer_fallback_category_from_image(image_features) -> dict:
+    """질의 문구에서 카테고리를 못 정했을 때 사진으로 상위/세부 카테고리를 추정한다.
+
+    - 상위 카테고리: CLIP 1위 세부 카테고리가 속한 상위 카테고리 (항상 채움)
+    - 세부 카테고리: 1위와 2위의 점수 차이가 IMAGE_FALLBACK_SUB_MARGIN 이상일 때만 채움 (아니면 "")
+    """
+    prompt_items = [
+        (sub_category, f"a photo of {description}")
+        for sub_prompts in IMAGE_FALLBACK_CATEGORY_PROMPTS.values()
+        for sub_category, descriptions in sub_prompts.items()
+        for description in descriptions
+    ]
+    cache_key = "fallback_all_categories"
+    text_features = IMAGE_CATEGORY_PROMPT_EMBEDDING_CACHE.get(cache_key)
+    if text_features is None:
+        text_features = encode_texts_with_fashion_clip_api([prompt for _category, prompt in prompt_items])
+        IMAGE_CATEGORY_PROMPT_EMBEDDING_CACHE[cache_key] = text_features
+
+    similarities = (image_features @ text_features.T).squeeze(0).detach().cpu().tolist()
+    sub_scores = {}
+    for (sub_category, _prompt), score in zip(prompt_items, similarities):
+        sub_scores[sub_category] = max(sub_scores.get(sub_category, -1.0), float(score))
+
+    ranked = sorted(sub_scores.items(), key=lambda row: row[1], reverse=True)
+    top_sub_category, top_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else -1.0
+    margin = top_score - second_score
+    return {
+        "main_category": IMAGE_FALLBACK_SUB_TO_MAIN[top_sub_category],
+        "sub_category": top_sub_category if margin >= IMAGE_FALLBACK_SUB_MARGIN else "",
+        "top_sub_category": top_sub_category,
+        "margin": round(margin, 4),
+        "top3": [
+            {"sub_category": sub_category, "score": round(score, 4)}
+            for sub_category, score in ranked[:3]
+        ],
+    }
+
+
 def grounding_dino_prompt_for_label(clothing_label: str, main_categories=None, sub_categories=None) -> str:
     labels = [clothing_label, *(sub_categories or []), *(main_categories or [])]
     for label in labels:
@@ -4341,6 +4442,7 @@ def run_search(
         image_features = original_image_features
         image_category_result = ImageCategoryResult()
         category_filter_source_value = "relaxed"
+        image_fallback_category = None
 
         # 룰 기반 카테고리 (항상 먼저 계산, LLM fallback 용도)
         t_query_analysis_start = time.perf_counter()
@@ -4359,6 +4461,29 @@ def run_search(
                 rule_sub_categories=rule_sub_categories,
             )
             timing_acc["gemini_ms"] += elapsed_ms(t_gemini_start)
+            # Gemini(+규칙)가 상위/세부 카테고리를 모두 비워 둔 경우에만 사진(CLIP)으로 채운다.
+            # 채운 뒤에는 Gemini가 준 값과 똑같이 처리한다(검색 필터, 재정렬, 옷 이름, DINO 대상).
+            if not main_categories and not sub_categories:
+                try:
+                    t_embedding_start = time.perf_counter()
+                    image_fallback_category = infer_fallback_category_from_image(original_image_features)
+                    timing_acc["embedding_ms"] += elapsed_ms(t_embedding_start)
+                    main_categories = [image_fallback_category["main_category"]]
+                    sub_categories = (
+                        [image_fallback_category["sub_category"]]
+                        if image_fallback_category["sub_category"]
+                        else []
+                    )
+                    print(
+                        "[ImageFallbackCategory] "
+                        f"main={image_fallback_category['main_category']}, "
+                        f"sub={image_fallback_category['sub_category'] or '-'}, "
+                        f"top={image_fallback_category['top_sub_category']}, "
+                        f"margin={image_fallback_category['margin']}"
+                    )
+                except Exception as exc:
+                    print(f"[ImageFallbackCategory] failed, no category used: {exc}")
+                    image_fallback_category = None
             if should_use_image_category_reconciliation(
                 query,
                 rule_main_categories,
@@ -4386,6 +4511,8 @@ def run_search(
                 sub_categories,
                 image_category_result,
             )
+            if image_fallback_category:
+                category_filter_source_value = "image_fallback"
 
         t_query_analysis = time.perf_counter()
 
@@ -4538,6 +4665,8 @@ def run_search(
             category_filter_source_value,
         )
         query_attrs["image_only_search"] = image_only_search
+        if image_fallback_category:
+            query_attrs["image_fallback_category"] = image_fallback_category
         query_attrs["design_similarity_mode"] = design_similarity_mode
         query_attrs["image_preprocess_source"] = image_preprocess_result.source
         query_attrs["image_preprocess_prompt"] = image_preprocess_result.prompt
