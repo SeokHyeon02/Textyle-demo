@@ -8,6 +8,7 @@ import re
 import tempfile
 import threading
 import traceback
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from math import sqrt
 from typing import Optional
@@ -102,7 +103,15 @@ search_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SEARCHES)
 # GroundingDINO/SAM은 모델 로딩과 내부 상태를 공유하므로 한 번에 한 요청만 사용한다.
 dino_sam_lock = threading.Lock()
 
-app = FastAPI(title="TexTyle FashionCLIP Search Server")
+@asynccontextmanager
+async def app_lifespan(_app):
+    # 서버가 요청을 받기 전에, 첫 검색 때 하던 준비 작업(모델 로딩, 프롬프트 임베딩 계산, DB 연결)을 미리 끝낸다.
+    # uvicorn으로 서버를 띄울 때만 실행된다(다른 스크립트에서 import할 때는 실행되지 않음).
+    await run_in_threadpool(warmup_search_server)
+    yield
+
+
+app = FastAPI(title="TexTyle FashionCLIP Search Server", lifespan=app_lifespan)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Loading FashionCLIP... model={FASHION_CLIP_MODEL_ID}, device={device}")
@@ -4341,6 +4350,66 @@ def log_search_debug(
             f"main_category={item.get('main_category')}, "
             f"sub_category={item.get('sub_category')}"
         )
+
+
+# 서버 시작 시 미리 준비하기 (TEXTYLE_WARMUP=0 이면 건너뜀)
+WARMUP_ENABLED = os.environ.get("TEXTYLE_WARMUP", "1").lower() not in {"0", "false", "no"}
+
+
+def warmup_search_server():
+    """첫 검색에서 생기던 준비 작업을 서버 시작 때 미리 끝낸다.
+
+    검색 결과나 응답 형식에는 영향이 없다. 단계가 실패해도 서버는 그대로 뜨고,
+    그 부분은 지금처럼 첫 요청 때 다시 준비된다.
+    """
+    if not WARMUP_ENABLED:
+        print("[Warmup] skipped (TEXTYLE_WARMUP=0)")
+        return
+
+    t_start = time.perf_counter()
+    dummy_image = Image.new("RGB", (512, 512), (128, 128, 128))
+    state = {}
+    steps = []
+
+    def run_step(name, fn):
+        t_step = time.perf_counter()
+        try:
+            fn()
+            steps.append(f"{name}={elapsed_ms(t_step)}ms")
+        except Exception as exc:
+            steps.append(f"{name}=failed({exc})")
+
+    def warm_embeddings():
+        state["image_features"] = get_image_embedding(dummy_image)
+        get_text_embedding("a photo of fashion item")
+
+    def warm_dino_sam():
+        backend = load_dino_sam_backend()
+        if backend is None:
+            raise RuntimeError("backend unavailable")
+        with dino_sam_lock:
+            preprocess_query_image_with_dino_sam(dummy_image, "clothing", [], [])
+            backend["sam_predictor"].set_image(np.array(dummy_image))
+
+    def warm_supabase():
+        query_embedding = F.normalize(state["image_features"], p=2, dim=-1).squeeze().tolist()
+        supabase.rpc("match_clothes_fashion", {
+            "query_embedding": query_embedding,
+            "match_threshold": 0.99,
+            "match_count": 1,
+            "filter_main_categories": None,
+            "filter_sub_categories": None,
+        }).execute()
+
+    run_step("validate", lambda: validate_fashion_image(dummy_image))
+    run_step("embedding", warm_embeddings)
+    run_step("prompt_cache_pants", lambda: infer_image_category_from_features(state["image_features"]))
+    run_step("prompt_cache_design", lambda: infer_design_details_from_image_features(state["image_features"], "clothing"))
+    run_step("prompt_cache_category", lambda: infer_fallback_category_from_image(state["image_features"]))
+    if DINO_SAM_ENABLED:
+        run_step("dino_sam", warm_dino_sam)
+    run_step("supabase", warm_supabase)
+    print(f"[Warmup] done in {elapsed_ms(t_start)}ms: " + ", ".join(steps))
 
 
 @app.get("/health")
