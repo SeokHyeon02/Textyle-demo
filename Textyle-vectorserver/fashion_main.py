@@ -4478,6 +4478,7 @@ def run_search(
         timing_acc = {
             "gemini_ms": 0.0,
             "dino_sam_ms": 0.0,
+            "color_ms": 0.0,
             "embedding_ms": 0.0,
             "rpc_ms": 0.0,
         }
@@ -4620,8 +4621,10 @@ def run_search(
             or should_run_pattern_classifier(pattern_context_text)
         )
         if should_extract_image_attributes:
+            t_color_start = time.perf_counter()
             denim_context = is_denim_query_context(query, main_categories, sub_categories)
             color_result = extract_query_color_result(color_analysis_image_obj, denim_context, pattern_context_text)
+            timing_acc["color_ms"] += elapsed_ms(t_color_start)
             if color_mode in {"same", "different"}:
                 query_image_color = normalize_color(color_result.color)
             elif design_similarity_mode and color_result.color:
@@ -4755,6 +4758,7 @@ def run_search(
             "query_analysis_ms": elapsed_ms(t_query_analysis_start, t_query_analysis),
             "gemini_ms": round(timing_acc["gemini_ms"], 1),
             "dino_sam_ms": round(timing_acc["dino_sam_ms"], 1),
+            "color_ms": round(timing_acc["color_ms"], 1),
             "embedding_ms": round(timing_acc["embedding_ms"], 1),
             "rpc_ms": round(timing_acc["rpc_ms"], 1),
             "rerank_ms": elapsed_ms(t_rerank_start, t_rerank),
@@ -4762,7 +4766,7 @@ def run_search(
         print(
             f"[Timing] total={timing['total_ms']}ms, validate={timing['validate_ms']}ms, "
             f"query_analysis={timing['query_analysis_ms']}ms, gemini={timing['gemini_ms']}ms, "
-            f"dino_sam={timing['dino_sam_ms']}ms, embedding={timing['embedding_ms']}ms, "
+            f"dino_sam={timing['dino_sam_ms']}ms, color={timing['color_ms']}ms, embedding={timing['embedding_ms']}ms, "
             f"rpc={timing['rpc_ms']}ms, rerank={timing['rerank_ms']}ms"
         )
 
