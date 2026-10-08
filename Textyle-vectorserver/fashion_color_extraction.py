@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from math import sqrt
 from typing import Any
 
+import numpy as np
 from PIL import Image, ImageColor
 
 
@@ -777,69 +778,48 @@ def kmeans_color_candidates(
     n_clusters: int = 5,
     color_hint: str = "",
 ) -> list[dict]:
-    if not pixels:
+    # 픽셀 단위 반복을 numpy 배열 연산으로 바꾼 버전. 계산 순서와 반올림 방식은 이전 구현과 같게 맞췄다.
+    if len(pixels) == 0:
         return []
-    if len(pixels) > _MAX_KMEANS_PIXELS:
-        step = max(1, len(pixels) // _MAX_KMEANS_PIXELS)
-        pixels = pixels[::step]
+    pixel_array = np.asarray(pixels, dtype=np.int64).reshape(-1, 3)
+    if len(pixel_array) > _MAX_KMEANS_PIXELS:
+        step = max(1, len(pixel_array) // _MAX_KMEANS_PIXELS)
+        pixel_array = pixel_array[::step]
 
     # Initialise centres from quantised buckets
-    buckets: dict[tuple, list] = {}
-    for r, g, b in pixels:
-        key = (round(r / 32) * 32, round(g / 32) * 32, round(b / 32) * 32)
-        buckets.setdefault(key, [0, 0, 0, 0])
-        buckets[key][0] += 1
-        buckets[key][1] += r
-        buckets[key][2] += g
-        buckets[key][3] += b
-
-    centres: list[tuple] = []
-    for _key, (count, r_sum, g_sum, b_sum) in sorted(
-        buckets.items(), key=lambda row: row[1][0], reverse=True,
-    ):
-        centres.append((r_sum / count, g_sum / count, b_sum / count))
-        if len(centres) >= min(n_clusters, len(pixels)):
-            break
+    centres = _bucket_centres(pixel_array, min(n_clusters, len(pixel_array)))
     if not centres:
         return []
 
-    labels = [0] * len(pixels)
+    cluster_count = len(centres)
+    labels = np.zeros(len(pixel_array), dtype=np.int64)
+    counts = np.zeros(cluster_count, dtype=np.int64)
     for _ in range(8):
-        changed = False
-        sums = [[0, 0, 0, 0] for _ in centres]
-        for idx, pixel in enumerate(pixels):
-            label = min(
-                range(len(centres)),
-                key=lambda ci: _squared_distance(pixel, centres[ci]),
-            )
-            if labels[idx] != label:
-                changed = True
-            labels[idx] = label
-            sums[label][0] += 1
-            sums[label][1] += pixel[0]
-            sums[label][2] += pixel[1]
-            sums[label][3] += pixel[2]
-        for idx, (count, r_sum, g_sum, b_sum) in enumerate(sums):
+        # _squared_distance와 같이 중심값을 int()로 절사한 뒤 정수 거리로 비교한다. 동점이면 앞 번호를 고른다.
+        centre_ints = np.trunc(np.asarray(centres, dtype=np.float64)).astype(np.int64)
+        distances = ((pixel_array[:, None, :] - centre_ints[None, :, :]) ** 2).sum(axis=2)
+        new_labels = distances.argmin(axis=1)
+        changed = bool((new_labels != labels).any())
+        labels = new_labels
+        counts = np.bincount(labels, minlength=cluster_count)
+        for idx in range(cluster_count):
+            count = int(counts[idx])
             if count:
-                centres[idx] = (r_sum / count, g_sum / count, b_sum / count)
+                rgb_sum = pixel_array[labels == idx].sum(axis=0)
+                centres[idx] = (int(rgb_sum[0]) / count, int(rgb_sum[1]) / count, int(rgb_sum[2]) / count)
         if not changed:
             break
 
     # Rebuild counts from final labels
-    counts = [0] * len(centres)
-    rgb_sums = [[0, 0, 0] for _ in centres]
-    for pixel, label in zip(pixels, labels):
-        counts[label] += 1
-        rgb_sums[label][0] += pixel[0]
-        rgb_sums[label][1] += pixel[1]
-        rgb_sums[label][2] += pixel[2]
-
-    total = sum(counts)
+    counts = np.bincount(labels, minlength=cluster_count)
+    total = int(counts.sum())
     candidates = []
-    for count, rs in zip(counts, rgb_sums):
+    for idx in range(cluster_count):
+        count = int(counts[idx])
         if not count:
             continue
-        rgb = tuple(int(round(v / count)) for v in rs)
+        rgb_sum = pixel_array[labels == idx].sum(axis=0)
+        rgb = tuple(int(round(int(v) / count)) for v in rgb_sum)
         named_color, named_group, named_rgb, fashion_color, fashion_reason = (
             classify_named_and_fashion_color(rgb, color_hint)
         )
@@ -1141,58 +1121,88 @@ def _extract_mask_pixels(
     return pixels, ignored, total_mask
 
 
-def _collect_border_pixels(
+def _ignored_pixel_mask(rgb: np.ndarray) -> np.ndarray:
+    """_is_ignored_pixel과 같은 판정을 (N, 3) 정수 배열 전체에 한 번에 적용한다."""
+    r = rgb[:, 0]
+    g = rgb[:, 1]
+    b = rgb[:, 2]
+    near_white = (r > 242) & (g > 242) & (b > 242)
+    near_black = (r < 12) & (g < 12) & (b < 12)
+    skin_like = (
+        ((r + g + b) >= 270)  # (r + g + b) / 3 >= 90
+        & (r > 95) & (g > 40) & (b > 20)
+        & ((rgb.max(axis=1) - rgb.min(axis=1)) > 15)
+        & (np.abs(r - g) > 15)
+        & (r > g) & (r > b)
+    )
+    return near_white | near_black | skin_like
+
+
+def _rgb_array(image: Image.Image) -> np.ndarray:
+    """RGB 이미지를 getdata()/getpixel 순서(행 우선)의 (N, 3) 정수 배열로 바꾼다."""
+    return np.asarray(image.convert("RGB"), dtype=np.int64).reshape(-1, 3)
+
+
+def _to_pixel_tuples(pixel_array: np.ndarray) -> list[tuple]:
+    return [tuple(pixel) for pixel in pixel_array.tolist()]
+
+
+def _bucket_centres(pixel_array: np.ndarray, n: int) -> list[tuple]:
+    """32 단위 버킷으로 묶어 픽셀 수가 많은 순서대로 최대 n개 중심을 만든다.
+
+    이전 구현(dict 삽입 순서 + 안정 정렬)과 같은 순서: 개수 내림차순, 같으면 처음 나온 버킷 먼저.
+    """
+    if len(pixel_array) == 0 or n <= 0:
+        return []
+    keys = np.round(pixel_array / 32).astype(np.int64)  # Python round와 같은 짝수 반올림
+    codes = keys[:, 0] * 81 + keys[:, 1] * 9 + keys[:, 2]
+    _unique, first_index, inverse, counts = np.unique(
+        codes, return_index=True, return_inverse=True, return_counts=True,
+    )
+    inverse = inverse.reshape(-1)
+    sums = [np.bincount(inverse, weights=pixel_array[:, channel]) for channel in range(3)]
+    order = sorted(range(len(counts)), key=lambda i: (-int(counts[i]), int(first_index[i])))
+    centres = []
+    for i in order[:n]:
+        count = int(counts[i])
+        centres.append((int(sums[0][i]) / count, int(sums[1][i]) / count, int(sums[2][i]) / count))
+    return centres
+
+
+def _collect_border_pixel_array(
     image_obj: Image.Image,
     border_ratio: float = _BORDER_RATIO,
-) -> list[tuple]:
+) -> np.ndarray:
     image = image_obj.convert("RGB").resize((224, 224))
     w, h = image.size
     bx = max(1, int(w * border_ratio))
     by = max(1, int(h * border_ratio))
-    pixels = []
-    for y in range(h):
-        for x in range(w):
-            if bx <= x < w - bx and by <= y < h - by:
-                continue
-            r, g, b = image.getpixel((x, y))
-            if _is_ignored_pixel(r, g, b):
-                continue
-            pixels.append((r, g, b))
-    return pixels
+    rgb = np.asarray(image, dtype=np.int64)
+    ys, xs = np.mgrid[0:h, 0:w]
+    inner = (xs >= bx) & (xs < w - bx) & (ys >= by) & (ys < h - by)
+    border = rgb[~inner]
+    return border[~_ignored_pixel_mask(border)]
+
+
+def _collect_border_pixels(
+    image_obj: Image.Image,
+    border_ratio: float = _BORDER_RATIO,
+) -> list[tuple]:
+    return _to_pixel_tuples(_collect_border_pixel_array(image_obj, border_ratio))
 
 
 def _simple_kmeans_centres(pixels: list[tuple], n: int = 3) -> list[tuple]:
     """Quick kmeans to find *n* background centre colours."""
-    if not pixels:
+    if len(pixels) == 0:
         return []
-    buckets: dict[tuple, list] = {}
-    for r, g, b in pixels:
-        key = (round(r / 32) * 32, round(g / 32) * 32, round(b / 32) * 32)
-        buckets.setdefault(key, [0, 0, 0, 0])
-        buckets[key][0] += 1
-        buckets[key][1] += r
-        buckets[key][2] += g
-        buckets[key][3] += b
-    centres = []
-    for _, (count, rs, gs, bs) in sorted(
-        buckets.items(), key=lambda row: row[1][0], reverse=True,
-    ):
-        centres.append((rs / count, gs / count, bs / count))
-        if len(centres) >= n:
-            break
-    return centres
+    return _bucket_centres(np.asarray(pixels, dtype=np.int64).reshape(-1, 3), n)
 
 
 def _estimate_background_rgbs(image_obj: Image.Image) -> list[tuple]:
-    border = _collect_border_pixels(image_obj)
+    border = _collect_border_pixel_array(image_obj)
     if len(border) < _MIN_PIXEL_COUNT:
         return []
-    centres = _simple_kmeans_centres(border, n=3)
-    # Keep only centres that represent >= 12% of border pixels
-    if not centres:
-        return []
-    # Simplified: return all centres (border already filtered)
-    return centres
+    return _bucket_centres(border, 3)
 
 
 def _extract_center_filtered_pixels(
@@ -1211,28 +1221,23 @@ def _extract_center_filtered_pixels(
         int(h * 0.92),
     )).resize((224, 224))
 
-    pixels = []
-    fallback = []
-    ignored = 0
-    bg_removed = 0
-    for pixel in cropped.getdata():
-        r, g, b = pixel[0], pixel[1], pixel[2]
-        if _is_ignored_pixel(r, g, b):
-            ignored += 1
-            continue
-        p = (r, g, b)
-        fallback.append(p)
-        if background_rgbs and any(
-            _squared_distance(p, bg) <= _BACKGROUND_DISTANCE_SQ
-            for bg in background_rgbs
-        ):
-            bg_removed += 1
-            continue
-        pixels.append(p)
+    rgb = _rgb_array(cropped)
+    ignored_mask = _ignored_pixel_mask(rgb)
+    ignored = int(ignored_mask.sum())
+    fallback = rgb[~ignored_mask]
+    if background_rgbs:
+        # _squared_distance와 같이 배경 중심값을 int()로 절사해 비교한다.
+        background_ints = np.trunc(np.asarray(background_rgbs, dtype=np.float64)).astype(np.int64)
+        distances = ((fallback[:, None, :] - background_ints[None, :, :]) ** 2).sum(axis=2)
+        is_background = (distances <= _BACKGROUND_DISTANCE_SQ).any(axis=1)
+    else:
+        is_background = np.zeros(len(fallback), dtype=bool)
+    bg_removed = int(is_background.sum())
+    pixels = fallback[~is_background]
 
     if len(pixels) >= _MIN_PIXEL_COUNT:
-        return pixels, ignored, bg_removed
-    return fallback, ignored, 0
+        return _to_pixel_tuples(pixels), ignored, bg_removed
+    return _to_pixel_tuples(fallback), ignored, 0
 
 
 # ---------------------------------------------------------------------------
@@ -1247,35 +1252,29 @@ _DENIM_COLOR_CENTROIDS = {
 
 
 def _classify_denim_from_pixels(pixels: list[tuple]) -> tuple[str, str, tuple[int, int, int] | None]:
-    if not pixels:
+    if len(pixels) == 0:
         return "", "", None
-    neutral_dark = 0
-    indigo = 0
-    blue_count = 0
-    light_blue = 0
-    blue_bias_sum = 0.0
-    brt_sum = 0.0
-    r_sum = g_sum = b_sum = 0.0
+    rgb = np.asarray(pixels, dtype=np.int64).reshape(-1, 3)
+    r = rgb[:, 0]
+    g = rgb[:, 1]
+    b = rgb[:, 2]
+    brt = (r + g + b) / 3
+    spread = rgb.max(axis=1) - rgb.min(axis=1)
+    blue_bias = b - np.maximum(r, g)
 
-    for r, g, b in pixels:
-        brt = (r + g + b) / 3
-        spread = max(r, g, b) - min(r, g, b)
-        blue_bias = b - max(r, g)
-        brt_sum += brt
-        blue_bias_sum += blue_bias
-        r_sum += r
-        g_sum += g
-        b_sum += b
-        if brt < 95 and spread < 34:
-            neutral_dark += 1
-        if brt < 135 and b >= r + 10 and b >= g - 8:
-            indigo += 1
-        if b >= r + 18 and b >= g + 2:
-            blue_count += 1
-            if brt >= 145:
-                light_blue += 1
+    neutral_dark = int(((brt < 95) & (spread < 34)).sum())
+    indigo = int(((brt < 135) & (b >= r + 10) & (b >= g - 8)).sum())
+    blue_mask = (b >= r + 18) & (b >= g + 2)
+    blue_count = int(blue_mask.sum())
+    light_blue = int((blue_mask & (brt >= 145)).sum())
+    # 이전 구현처럼 앞에서부터 차례로 더한 값(cumsum의 마지막 값)을 써서 소수점 오차까지 같게 맞춘다.
+    brt_sum = float(np.cumsum(brt)[-1])
+    blue_bias_sum = float(int(blue_bias.sum()))
+    r_sum = float(int(r.sum()))
+    g_sum = float(int(g.sum()))
+    b_sum = float(int(b.sum()))
 
-    total = len(pixels)
+    total = len(rgb)
     neutral_ratio = neutral_dark / total
     indigo_ratio = indigo / total
     blue_ratio = blue_count / total
