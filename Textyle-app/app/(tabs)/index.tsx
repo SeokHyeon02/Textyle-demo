@@ -26,6 +26,70 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const FASHION_API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '');
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/200?text=No+Image';
 
+// 웹 브라우저용 검색 요청. expo-file-system(uploadAsync 등)은 웹에서 동작하지 않아 fetch + FormData로 보낸다.
+// 앱(iOS/Android)은 searchClothes 안의 기존 방식을 그대로 쓴다.
+async function requestSearchOnWeb(params: {
+  url: string;
+  imageUri: string;
+  file?: File;
+  fileName?: string | null;
+  mimeType: string;
+  query: string;
+  useGroundingDino: boolean;
+  token: string;
+}) {
+  let blob: Blob;
+  if (params.file) {
+    blob = params.file;
+  } else {
+    try {
+      const imageResponse = await fetch(params.imageUri);
+      if (!imageResponse.ok) throw new Error(`HTTP ${imageResponse.status}`);
+      blob = await imageResponse.blob();
+    } catch (e) {
+      throw new Error('이미지를 불러오지 못했습니다. 사진을 다시 선택해주세요.');
+    }
+  }
+  if (blob.size === 0) {
+    throw new Error('이미지 파일을 읽을 수 없거나 용량이 0바이트입니다.');
+  }
+  if (!blob.type.startsWith('image/')) {
+    blob = new Blob([blob], { type: params.mimeType });
+  }
+  const extension = blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg';
+
+  const formData = new FormData();
+  formData.append('file', blob, params.fileName || `search.${extension}`);
+  formData.append('query', params.query);
+  formData.append('use_grounding_dino', params.useGroundingDino ? 'true' : 'false');
+
+  let response: Response;
+  try {
+    response = await fetch(params.url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${params.token}` },
+      body: formData,
+    });
+  } catch (e) {
+    throw new Error('서버에 연결할 수 없습니다. 네트워크와 API 주소를 확인해주세요.');
+  }
+
+  const body = await response.text();
+  if (response.status !== 200) {
+    let errorDetail = '검색 요청을 처리하지 못했습니다.';
+    try {
+      const errorData = JSON.parse(body);
+      if (errorData.detail) errorDetail = errorData.detail;
+    } catch (e) {}
+    throw new Error(errorDetail);
+  }
+  try {
+    return JSON.parse(body);
+  } catch (error) {
+    throw new Error('서버로부터 올바른 형식의 응답을 받지 못했습니다. (데이터 파싱 오류)');
+  }
+}
+
 type SearchResult = {
   id?: number | null;
   image_url?: string | null;
@@ -256,6 +320,19 @@ export default function SearchScreen() {
     }
   };
 
+  const applySearchData = (data: any) => {
+    setSearchResults(Array.isArray(data?.results) ? data.results : []);
+    setSearchMetadata({
+      enhanced_query: data.enhanced_query,
+      color_extracted: data.color_extracted,
+      intent: data.intent,
+      query_image_attributes: data.query_image_attributes,
+      search_warnings: data.search_warnings,
+      timing: data.timing,
+    });
+    setHasSearched(true);
+  };
+
   const searchClothes = async () => {
     if (!imageUri) {
       setErrorMessage('검색할 사진을 먼저 선택해주세요.');
@@ -275,6 +352,26 @@ export default function SearchScreen() {
 
       let uploadUri = selectedImage?.uri || imageUri;
       let mimeType = selectedImage?.mimeType || 'image/jpeg';
+
+      if (Platform.OS === 'web') {
+        // 웹 브라우저: 별도 경로로 요청한다. (앱은 아래 기존 방식 그대로)
+        const webToken = await AsyncStorage.getItem('userToken');
+        if (!webToken) {
+          throw new Error('로그인이 필요합니다.');
+        }
+        const webData = await requestSearchOnWeb({
+          url: `${FASHION_API_URL}/api/search`,
+          imageUri: uploadUri,
+          file: selectedImage?.uri === uploadUri ? selectedImage?.file : undefined,
+          fileName: selectedImage?.uri === uploadUri ? selectedImage?.fileName : undefined,
+          mimeType,
+          query: searchText.trim(),
+          useGroundingDino,
+          token: webToken,
+        });
+        applySearchData(webData);
+        return;
+      }
 
       if (uploadUri && /^https?:\/\//.test(uploadUri)) {
         const target = `${FileSystem.cacheDirectory}search-${Date.now()}.jpg`;
@@ -336,16 +433,7 @@ export default function SearchScreen() {
         throw new Error('서버로부터 올바른 형식의 응답을 받지 못했습니다. (데이터 파싱 오류)');
       }
       
-      setSearchResults(Array.isArray(data?.results) ? data.results : []);
-      setSearchMetadata({
-        enhanced_query: data.enhanced_query,
-        color_extracted: data.color_extracted,
-        intent: data.intent,
-        query_image_attributes: data.query_image_attributes,
-        search_warnings: data.search_warnings,
-        timing: data.timing,
-      });
-      setHasSearched(true);
+      applySearchData(data);
     } catch (error) {
       console.error('검색 에러:', error);
       const message = error instanceof Error
