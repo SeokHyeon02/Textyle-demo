@@ -28,8 +28,8 @@ export default function SignUpScreen() {
     try {
       const API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '') || 'http://localhost:8080';
 
-      console.log('회원가입 URL:', `${API_URL}api/auth/join`);
-      const response = await fetch(`${API_URL}api/auth/join`, {
+      console.log('회원가입 URL:', `${API_URL}/api/auth/join`);
+      const response = await fetch(`${API_URL}/api/auth/join`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
