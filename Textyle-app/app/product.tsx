@@ -3,7 +3,6 @@ import type { Session } from '@supabase/supabase-js';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Alert,
   Animated,
   Image,
   Linking,
@@ -17,6 +16,7 @@ import {
 import { addBookmark, fetchBookmarkedIds, removeBookmark } from '../lib/bookmarks';
 import { setSearchPresetImage } from '../lib/searchPreset';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { notify } from '../lib/notify';
 
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/400?text=No+Image';
 
@@ -109,7 +109,7 @@ export default function ProductDetailScreen() {
 
   const handleBookmark = async () => {
     if (!isLoggedIn) {
-      Alert.alert('알림', '찜하려면 로그인이 필요합니다.');
+      notify('알림', '찜하려면 로그인이 필요합니다.');
       return;
     }
     if (clothId === null || toggling) return;
@@ -124,7 +124,7 @@ export default function ProductDetailScreen() {
     } catch (error) {
       setBookmarked(wasBookmarked); // 롤백
       console.error('찜 처리 실패:', error);
-      Alert.alert('오류', '찜 처리에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      notify('오류', '찜 처리에 실패했습니다. 잠시 후 다시 시도해주세요.');
     } finally {
       setToggling(false);
     }
@@ -139,7 +139,7 @@ export default function ProductDetailScreen() {
   // 구매하기: 상품 판매 페이지로 이동.
   const handleBuy = async () => {
     if (!shopLink) {
-      Alert.alert('알림', '상품 판매 링크가 없습니다.');
+      notify('알림', '상품 판매 링크가 없습니다.');
       return;
     }
     let url = shopLink.trim();
@@ -148,7 +148,7 @@ export default function ProductDetailScreen() {
     try {
       await Linking.openURL(url);
     } catch {
-      Alert.alert('오류', '링크를 열 수 없습니다.');
+      notify('오류', '링크를 열 수 없습니다.');
     }
   };
 

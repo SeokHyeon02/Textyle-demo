@@ -5,7 +5,6 @@ import { router } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Image,
   Linking,
   RefreshControl,
@@ -19,6 +18,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { BookmarkRow, fetchBookmarks, removeBookmark } from '../../lib/bookmarks';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../../supabase';
+import { notify } from '../../lib/notify';
 
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/200?text=No+Image';
 
@@ -82,7 +82,7 @@ export default function BookmarksScreen() {
       await removeBookmark(clothId);
     } catch (error) {
       console.error('찜 해제 실패:', error);
-      Alert.alert('찜 해제 실패', '문제가 발생했습니다. 다시 시도해주세요.');
+      notify('찜 해제 실패', '문제가 발생했습니다. 다시 시도해주세요.');
       setBookmarks(snapshot); // 롤백
     } finally {
       setRemovingIds((prev) => {
@@ -95,7 +95,7 @@ export default function BookmarksScreen() {
 
   const openShopLink = async (link?: string | null) => {
     if (!link) {
-      Alert.alert('알림', '상품 링크가 없습니다.');
+      notify('알림', '상품 링크가 없습니다.');
       return;
     }
 
@@ -109,7 +109,7 @@ export default function BookmarksScreen() {
     try {
       await Linking.openURL(targetUrl);
     } catch {
-      Alert.alert('오류', '링크를 열 수 없습니다.');
+      notify('오류', '링크를 열 수 없습니다.');
     }
   };
 

@@ -3,7 +3,6 @@ import { router } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -15,6 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { notify } from '../../lib/notify';
 
 export default function LoginScreen() {
   const [session, setSession] = useState(false);
@@ -47,7 +47,7 @@ export default function LoginScreen() {
 
   const signInWithEmail = async () => {
     if (!email.trim() || !password) {
-      Alert.alert('입력 필요', '이메일과 비밀번호를 입력해주세요.');
+      notify('입력 필요', '이메일과 비밀번호를 입력해주세요.');
       return;
     }
 
@@ -74,10 +74,10 @@ export default function LoginScreen() {
         setSession(true);
       } else {
         const err = await response.json();
-        Alert.alert('로그인 실패', err.error || '이메일이나 비밀번호가 틀렸습니다.');
+        notify('로그인 실패', err.error || '이메일이나 비밀번호가 틀렸습니다.');
       }
     } catch (error) {
-      Alert.alert('네트워크 에러', '서버에 연결할 수 없습니다.');
+      notify('네트워크 에러', '서버에 연결할 수 없습니다.');
     }
     setLoading(false);
   };
@@ -92,7 +92,7 @@ export default function LoginScreen() {
   };
 
   const showDeleteAccountNotice = () => {
-    Alert.alert('회원탈퇴', '회원탈퇴 기능은 현재 구현 중입니다.');
+    notify('회원탈퇴', '회원탈퇴 기능은 현재 구현 중입니다.');
   };
 
   if (!session) {

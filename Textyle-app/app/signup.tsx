@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import React, { useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { notify } from '../lib/notify';
 
 export default function SignUpScreen() {
   const [email, setEmail] = useState('');
@@ -14,11 +15,11 @@ export default function SignUpScreen() {
 
     setLoading(true);
     if (!email || !password || !nickname) {
-      Alert.alert('알림', '모든 정보를 입력해주세요.');
+      notify('알림', '모든 정보를 입력해주세요.');
       return;
     }
     if (password !== passwordConfirm) {
-      Alert.alert('알림', '비밀번호가 서로 일치하지 않습니다.');
+      notify('알림', '비밀번호가 서로 일치하지 않습니다.');
       return;
     }
 
@@ -46,15 +47,15 @@ export default function SignUpScreen() {
     console.log('회원가입 response:', responseText);
 
       if (response.ok) {
-        Alert.alert('가입 성공!', '환영합니다. 이제 로그인해주세요.', [
+        notify('가입 성공!', '환영합니다. 이제 로그인해주세요.', [
           { text: '확인', onPress: () => router.replace('/login') },
         ]);
       } else {
         const errorData = await response.json();
-        Alert.alert('회원가입 실패', errorData.error || '가입 중 오류가 발생했습니다.');
+        notify('회원가입 실패', errorData.error || '가입 중 오류가 발생했습니다.');
       }
     } catch (e) {
-      Alert.alert('네트워크 오류', '서버와 통신할 수 없습니다.');
+      notify('네트워크 오류', '서버와 통신할 수 없습니다.');
     }
     
     setLoading(false);

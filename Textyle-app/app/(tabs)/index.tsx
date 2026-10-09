@@ -7,7 +7,6 @@ import { router } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Image,
   Linking,
   Platform,
@@ -22,6 +21,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { addBookmark, fetchBookmarkedIds, removeBookmark } from '../../lib/bookmarks';
 import { consumeSearchPresetImage } from '../../lib/searchPreset';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { notify } from '../../lib/notify';
 
 const FASHION_API_URL = process.env.EXPO_PUBLIC_FASHION_API_URL?.replace(/\/$/, '');
 const PLACEHOLDER_IMAGE_URL = 'https://via.placeholder.com/200?text=No+Image';
@@ -265,7 +265,7 @@ export default function SearchScreen() {
 
   const toggleBookmark = async (item: SearchResult) => {
     if (!isLoggedIn) {
-      Alert.alert('알림', '찜하려면 로그인이 필요합니다.');
+      notify('알림', '찜하려면 로그인이 필요합니다.');
       router.push('/login');
       return;
     }
@@ -294,7 +294,7 @@ export default function SearchScreen() {
         return next;
       });
       console.error('북마크 토글 실패:', error);
-      Alert.alert('오류', '찜 설정에 실패했습니다. 다시 시도해주세요.');
+      notify('오류', '찜 설정에 실패했습니다. 다시 시도해주세요.');
     } finally {
       setTogglingIds((prev) => {
         const next = new Set(prev);
@@ -449,7 +449,7 @@ export default function SearchScreen() {
 
   const openShopLink = async (link?: string | null) => {
     if (!link) {
-      Alert.alert('알림', '상품 링크가 없습니다.');
+      notify('알림', '상품 링크가 없습니다.');
       return;
     }
 
@@ -463,7 +463,7 @@ export default function SearchScreen() {
     try {
       await Linking.openURL(targetUrl);
     } catch {
-      Alert.alert('오류', '링크를 열 수 없습니다.');
+      notify('오류', '링크를 열 수 없습니다.');
     }
   };
 
