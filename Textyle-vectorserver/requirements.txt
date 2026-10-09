@@ -1,27 +1,31 @@
-fastapi>=0.100.0
+# Textyle 벡터 서버 패키지 (Python 3.10 ~ 3.12에서 설치 확인)
+# 설치: pip install -r requirements.txt
+#
+# PyTorch
+# - 리눅스에서 그냥 설치하면 GPU(CUDA 12.8)용 torch가 설치된다. GPU가 없는 인스턴스에서는 자동으로 CPU를 쓴다.
+# - CPU 전용 주소(--index-url https://download.pytorch.org/whl/cpu)로 설치하지 않는다.
+#   CPU 전용 torch는 나중에 GPU 인스턴스로 바꿔도 GPU를 쓰지 못한다.
+# - GPU 인스턴스에는 NVIDIA 드라이버가 있어야 한다 (nvidia-smi 로 확인).
 
-uvicorn>=0.20.0
+# 웹 서버
+fastapi==0.143.0
+uvicorn==0.54.0
+python-multipart==0.0.32
+pydantic==2.14.0
+python-dotenv==1.2.4
 
-pydantic>=2.0.0
+# 모델
+torch==2.10.0
+torchvision==0.25.0        # GroundingDINO(DINO)에 필요
+transformers==4.57.6       # 5.x는 get_image_features 반환 형식이 달라 쓰지 않는다
+fashion-clip==0.2.2
+segment-anything==1.0
+numpy==2.2.6
+pillow==12.3.0
 
-torch>=2.0.0
+# 외부 서비스
+supabase==2.32.0
+google-genai==2.29.0
 
-transformers>=4.30.0,<5
-
-supabase>=2.0.0
-
-python-dotenv>=1.0.0
-
-numpy>=1.22.0
-
-pillow>=9.0.0
-
-google-genai>=0.1.0
-
-fashion-clip>=0.1.1
-
-rembg>=2.0.0
-
-segment-anything
-
-python-multipart
+# 색 추출 예비 경로(배경 제거). [cpu]는 onnxruntime을 함께 설치한다
+rembg[cpu]==2.0.69
