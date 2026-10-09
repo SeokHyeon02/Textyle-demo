@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from supabase import create_client, Client
+from fastapi.security import HTTPAuthorizationCredentials
 import os
 
 # 환경 변수에서 Supabase 접속 정보 로드 (실제 배포 시 .env 파일 사용)
