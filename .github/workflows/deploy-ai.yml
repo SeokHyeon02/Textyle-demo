@@ -1,0 +1,91 @@
+# main 브랜치의 Textyle-vectorserver 가 바뀌면 AI 서버(EC2)에서 최신 코드를 받고 재시작한다.
+# GitHub Secrets를 쓰지 않는다.
+#   - AWS 임시 권한(OIDC)을 받아
+#   - SSM(서버 명령 실행)으로 서버에서 git pull, (requirements 바뀌면) 패키지 설치, 재시작을 한다.
+# AI 서버 인스턴스가 꺼져(중지) 있으면 실패한다. 켠 뒤 Actions 탭에서 'Run workflow'로 다시 실행하면 된다.
+name: Deploy AI server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Textyle-vectorserver/**"
+      - ".github/workflows/deploy-ai.yml"
+  workflow_dispatch: # Actions 탭에서 수동 실행
+
+permissions:
+  id-token: write # AWS 임시 권한(OIDC) 발급
+  contents: read
+
+concurrency:
+  group: deploy-ai
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-2
+  # ↓ 아래 2개는 AWS 콘솔에서 확인한 값으로 바꾼다 (비밀값 아님)
+  ROLE_ARN: arn:aws:iam::615592621508:role/textyle-github-deploy
+  INSTANCE_ID: i-082d3d341d27af660
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: AWS 임시 권한 받기
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: 서버에서 최신 코드 받고 재시작
+        run: |
+          # 서버(root)에서 실행할 명령. 경로는 systemd 서비스 설정(textyle-ai)에서 읽어 온다.
+          cat > deploy.sh <<'EOF'
+          set -e
+          UNIT=textyle-ai
+          WD=$(systemctl show -p WorkingDirectory --value "$UNIT")
+          [ -n "$WD" ] || WD=/home/ubuntu/Textyle-demo
+          EXE=$(systemctl show -p ExecStart --value "$UNIT" | grep -o 'path=[^ ;]*' | head -n 1 | cut -d= -f2)
+          PIP="$(dirname "$EXE")/pip"
+          REPO=$(sudo -u ubuntu -H git -C "$WD" rev-parse --show-toplevel)
+          BEFORE=$(sudo -u ubuntu -H git -C "$REPO" rev-parse HEAD)
+          sudo -u ubuntu -H git -C "$REPO" fetch origin main:refs/remotes/origin/main
+          sudo -u ubuntu -H git -C "$REPO" checkout -B main origin/main
+          if ! sudo -u ubuntu -H git -C "$REPO" diff --quiet "$BEFORE" HEAD -- Textyle-vectorserver/requirements.txt; then
+            echo "requirements.txt 변경됨 -> 패키지 설치"
+            sudo -u ubuntu -H "$PIP" install -r "$REPO/Textyle-vectorserver/requirements.txt"
+          fi
+          systemctl restart "$UNIT"
+          for _ in $(seq 1 120); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8001/health; then
+              echo "AI 서버 정상 응답"
+              sudo -u ubuntu -H git -C "$REPO" log -1 --oneline
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "10분 안에 /health 응답이 없어요"
+          journalctl -u "$UNIT" -n 40 --no-pager
+          exit 1
+          EOF
+          jq -Rs '{commands: split("\n")}' deploy.sh > params.json
+
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy ai ${GITHUB_SHA::7}" \
+            --parameters file://params.json \
+            --query Command.CommandId --output text)
+
+          STATUS=Pending
+          for _ in $(seq 1 420); do
+            sleep 5
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Pending|InProgress|Delayed) ;; *) break ;; esac
+          done
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query '[StandardOutputContent, StandardErrorContent]' --output text || true
+          echo "서버 명령 결과: $STATUS"
+          test "$STATUS" = "Success"
