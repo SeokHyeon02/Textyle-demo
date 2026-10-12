@@ -28,7 +28,7 @@ import torch.nn.functional as F
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
 from supabase import Client, create_client
 from transformers import CLIPModel, CLIPProcessor
@@ -100,6 +100,12 @@ dino_sam_failed = False
 # GPU서버 이용 시 동시 실행 수 확장 가능 (환경변수 MAX_CONCURRENT_SEARCHES로도 변경할 수 있다).
 MAX_CONCURRENT_SEARCHES = max(1, int(os.environ.get("MAX_CONCURRENT_SEARCHES", "2")))
 search_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SEARCHES)
+
+# 업로드 이미지 최대 용량(MB). 스프링 서버의 업로드 제한(20MB)과 맞춘다.
+MAX_UPLOAD_MB = max(1, int(os.environ.get("MAX_UPLOAD_MB", "20")))
+# 업로드 이미지의 긴 변 최대 크기(px). 큰 폰 사진을 미리 줄여 DINO/SAM·색 추출 계산량을 줄인다.
+# (FashionCLIP·색 추출은 224px, DINO는 짧은 변 800px, SAM은 긴 변 1024px로 다시 줄여 쓰므로 결과 영향은 작다)
+MAX_IMAGE_SIDE = max(256, int(os.environ.get("MAX_IMAGE_SIDE", "1280")))
 # GroundingDINO/SAM은 모델 로딩과 내부 상태를 공유하므로 한 번에 한 요청만 사용한다.
 dino_sam_lock = threading.Lock()
 
@@ -759,23 +765,6 @@ def infer_color_from_text(text: Optional[str]) -> str:
             if not blocked:
                 return canonical
     return ""
-
-
-def infer_design_details(text: Optional[str]) -> set[str]:
-    normalized = normalize_text(text)
-    compact = re.sub(r"[^a-z0-9가-힣]+", "", normalized)
-    if not compact:
-        return set()
-
-    matched = set()
-    for canonical, alias_set in DESIGN_DETAIL_ALIASES.items():
-        for alias in alias_set | {canonical}:
-            alias_text = alias.lower()
-            alias_compact = re.sub(r"[^a-z0-9가-힣]+", "", alias_text)
-            if alias_text in normalized or (len(alias_compact) >= 2 and alias_compact in compact):
-                matched.add(canonical)
-                break
-    return matched
 
 
 def infer_design_details(text: Optional[str]) -> set[str]:
@@ -4447,13 +4436,13 @@ async def search_clothes(
         if sql_xss_pattern.search(query):
             raise HTTPException(status_code=400, detail="유효하지 않은 특수문자나 명령어가 포함되어 있습니다.")
 
-    # 2. 이미지 용량 검증 (5MB 제한 예시)
+    # 2. 이미지 용량 검증 (MAX_UPLOAD_MB, 기본 20MB)
     if not file:
         raise HTTPException(status_code=400, detail="image is required")
     
     content = await file.read()
-    if len(content) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="허용된 이미지 용량(5MB)을 초과했습니다.")
+    if len(content) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(status_code=400, detail=f"허용된 이미지 용량({MAX_UPLOAD_MB}MB)을 초과했습니다.")
     
     # 3. 무거운 검색 작업(모델 계산, Gemini/Supabase 호출)은 별도 스레드에서 실행한다.
     #    이벤트 루프를 붙잡지 않으므로 검색 중에도 /health 등 다른 요청이 응답한다.
@@ -4467,6 +4456,19 @@ async def search_clothes(
             query,
             use_grounding_dino,
         )
+
+
+def load_upload_image(content: bytes) -> Image.Image:
+    image_obj = Image.open(io.BytesIO(content))
+    # 폰 사진의 회전 정보(EXIF)를 반영해 실제로 보이는 방향으로 돌린다. (정보가 없거나 깨졌으면 그대로 쓴다)
+    try:
+        image_obj = ImageOps.exif_transpose(image_obj)
+    except Exception as exc:
+        print(f"EXIF 회전 정보 무시: {exc}")
+    image_obj = image_obj.convert("RGB")
+    if max(image_obj.size) > MAX_IMAGE_SIDE:
+        image_obj.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
+    return image_obj
 
 
 def run_search(
@@ -4489,7 +4491,7 @@ def run_search(
         image_only_search = not query
         # 삭제
         try:
-            image_obj = Image.open(io.BytesIO(content)).convert("RGB")
+            image_obj = load_upload_image(content)
         except UnidentifiedImageError:
             t_invalid_image = time.perf_counter()
             print(
@@ -4810,4 +4812,5 @@ def run_search(
     except Exception as exc:
         print("FashionCLIP search server error:")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(exc))
+        # 내부 에러 내용은 로그(위 traceback)에만 남기고, 사용자에게는 일반 메시지를 보낸다.
+        raise HTTPException(status_code=500, detail="검색 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
