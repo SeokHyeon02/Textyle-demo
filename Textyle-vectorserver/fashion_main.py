@@ -23,6 +23,7 @@ except ImportError:
     genai = None
     genai_types = None
 
+import httpx
 import torch
 import torch.nn.functional as F
 from dotenv import load_dotenv
@@ -30,7 +31,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field
-from supabase import Client, create_client
+from supabase import Client, ClientOptions, create_client
 from transformers import CLIPModel, CLIPProcessor
 from fashion_color_extraction import (
     DENIM_COLOR_RGB_CENTROIDS,
@@ -66,7 +67,24 @@ DINO_SAM_ENABLED = os.environ.get("TEXTYLE_ENABLE_DINO_SAM", "1").lower() not in
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("SUPABASE_URL or SUPABASE_KEY is missing in .env")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Supabase(DB) 연결 재사용 설정.
+# 기본값(httpx)은 5초 동안 안 쓴 연결을 닫아서, 검색 간격이 5초를 넘으면 매번 새로 연결하느라 DB 조회가 느려졌다.
+# 쉬는 연결을 SUPABASE_KEEPALIVE_EXPIRY초(기본 300초) 동안 유지해 다음 검색에서 그대로 재사용한다.
+SUPABASE_KEEPALIVE_EXPIRY = max(5.0, float(os.environ.get("SUPABASE_KEEPALIVE_EXPIRY", "300")))
+# 검색이 없어도 SUPABASE_KEEPALIVE_INTERVAL초(기본 45초)마다 가벼운 DB 조회를 보내 연결과 DB 데이터를 준비된 상태로 둔다. 0이면 끈다.
+SUPABASE_KEEPALIVE_INTERVAL = max(0, int(os.environ.get("SUPABASE_KEEPALIVE_INTERVAL", "45")))
+
+supabase_http_client = httpx.Client(
+    http2=True,
+    timeout=httpx.Timeout(120.0),  # 라이브러리 기본값과 같은 120초
+    follow_redirects=True,
+    limits=httpx.Limits(keepalive_expiry=SUPABASE_KEEPALIVE_EXPIRY),
+)
+supabase: Client = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY,
+    options=ClientOptions(httpx_client=supabase_http_client),
+)
 
 # Gemini 응답 대기 시간 제한(ms). Gemini가 느리거나 멈춰도 이 시간이 지나면 규칙 기반 분석으로 넘어간다.
 # Gemini API는 10초 미만의 제한 시간을 거절하므로("Minimum allowed deadline is 10s") 10초보다 작게 잡지 않는다.
@@ -114,6 +132,7 @@ async def app_lifespan(_app):
     # 서버가 요청을 받기 전에, 첫 검색 때 하던 준비 작업(모델 로딩, 프롬프트 임베딩 계산, DB 연결)을 미리 끝낸다.
     # uvicorn으로 서버를 띄울 때만 실행된다(다른 스크립트에서 import할 때는 실행되지 않음).
     await run_in_threadpool(warmup_search_server)
+    start_supabase_keepalive()
     yield
 
 
@@ -4348,6 +4367,45 @@ def log_search_debug(
 WARMUP_ENABLED = os.environ.get("TEXTYLE_WARMUP", "1").lower() not in {"0", "false", "no"}
 
 
+def ping_supabase(query_embedding) -> None:
+    # 결과가 거의 없도록 높은 기준(0.99)으로 1개만 요청하는 가벼운 조회. 연결과 DB 데이터를 준비시키는 용도다.
+    supabase.rpc("match_clothes_fashion", {
+        "query_embedding": query_embedding,
+        "match_threshold": 0.99,
+        "match_count": 1,
+        "filter_main_categories": None,
+        "filter_sub_categories": None,
+    }).execute()
+
+
+def start_supabase_keepalive() -> None:
+    """검색이 뜸할 때도 Supabase 연결이 끊기거나 DB 데이터가 식지 않도록 주기적으로 가벼운 조회를 보낸다.
+
+    검색 결과나 응답 형식에는 영향이 없다. 조회가 실패해도 로그만 남기고 계속 동작한다.
+    """
+    if SUPABASE_KEEPALIVE_INTERVAL <= 0:
+        print("[Keepalive] Supabase keepalive disabled (SUPABASE_KEEPALIVE_INTERVAL=0)")
+        return
+
+    def loop():
+        query_embedding = None
+        while True:
+            time.sleep(SUPABASE_KEEPALIVE_INTERVAL)
+            try:
+                if query_embedding is None:
+                    text_features = get_text_embedding("a photo of fashion item")
+                    query_embedding = F.normalize(text_features, p=2, dim=-1).squeeze().tolist()
+                ping_supabase(query_embedding)
+            except Exception as exc:
+                print(f"[Keepalive] Supabase ping failed: {exc}")
+
+    threading.Thread(target=loop, name="supabase-keepalive", daemon=True).start()
+    print(
+        f"[Keepalive] Supabase ping every {SUPABASE_KEEPALIVE_INTERVAL}s, "
+        f"idle connection kept {SUPABASE_KEEPALIVE_EXPIRY:.0f}s"
+    )
+
+
 def warmup_search_server():
     """첫 검색에서 생기던 준비 작업을 서버 시작 때 미리 끝낸다.
 
@@ -4385,13 +4443,7 @@ def warmup_search_server():
 
     def warm_supabase():
         query_embedding = F.normalize(state["image_features"], p=2, dim=-1).squeeze().tolist()
-        supabase.rpc("match_clothes_fashion", {
-            "query_embedding": query_embedding,
-            "match_threshold": 0.99,
-            "match_count": 1,
-            "filter_main_categories": None,
-            "filter_sub_categories": None,
-        }).execute()
+        ping_supabase(query_embedding)
 
     run_step("validate", lambda: validate_fashion_image(dummy_image))
     run_step("embedding", warm_embeddings)
