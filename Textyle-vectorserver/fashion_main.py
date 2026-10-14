@@ -521,8 +521,6 @@ IMAGE_FALLBACK_SUB_TO_MAIN = {
     for main_category, sub_prompts in IMAGE_FALLBACK_CATEGORY_PROMPTS.items()
     for sub_category in sub_prompts
 }
-# 세부 카테고리는 CLIP 1위와 2위의 점수 차이가 이 값 이상일 때만 채운다 (테스트 사진 20장 기준으로 정한 값).
-IMAGE_FALLBACK_SUB_MARGIN = float(os.environ.get("IMAGE_FALLBACK_SUB_MARGIN", "0.04"))
 
 GROUNDING_DINO_PROMPTS_BY_LABEL = {
     "데님팬츠": "denim jeans",
@@ -3412,7 +3410,8 @@ def infer_fallback_category_from_image(image_features) -> dict:
     """질의 문구에서 카테고리를 못 정했을 때 사진으로 상위/세부 카테고리를 추정한다.
 
     - 상위 카테고리: CLIP 1위 세부 카테고리가 속한 상위 카테고리 (항상 채움)
-    - 세부 카테고리: 1위와 2위의 점수 차이가 IMAGE_FALLBACK_SUB_MARGIN 이상일 때만 채움 (아니면 "")
+    - 세부 카테고리: 채우지 않는다. 사진만으로는 세부 종류를 잘못 고를 수 있어 상위 카테고리로만 필터링한다.
+      (참고용으로 CLIP 1위 세부 카테고리와 1·2위 점수 차이는 top_sub_category, margin에 남긴다)
     """
     prompt_items = [
         (sub_category, f"a photo of {description}")
@@ -3437,7 +3436,7 @@ def infer_fallback_category_from_image(image_features) -> dict:
     margin = top_score - second_score
     return {
         "main_category": IMAGE_FALLBACK_SUB_TO_MAIN[top_sub_category],
-        "sub_category": top_sub_category if margin >= IMAGE_FALLBACK_SUB_MARGIN else "",
+        "sub_category": "",
         "top_sub_category": top_sub_category,
         "margin": round(margin, 4),
         "top3": [
@@ -4595,16 +4594,12 @@ def run_search(
                     t_embedding_start = time.perf_counter()
                     image_fallback_category = infer_fallback_category_from_image(original_image_features)
                     timing_acc["embedding_ms"] += elapsed_ms(t_embedding_start)
+                    # 사진으로는 상위 카테고리만 채운다. 세부 카테고리 필터는 걸지 않는다.
                     main_categories = [image_fallback_category["main_category"]]
-                    sub_categories = (
-                        [image_fallback_category["sub_category"]]
-                        if image_fallback_category["sub_category"]
-                        else []
-                    )
+                    sub_categories = []
                     print(
                         "[ImageFallbackCategory] "
                         f"main={image_fallback_category['main_category']}, "
-                        f"sub={image_fallback_category['sub_category'] or '-'}, "
                         f"top={image_fallback_category['top_sub_category']}, "
                         f"margin={image_fallback_category['margin']}"
                     )
