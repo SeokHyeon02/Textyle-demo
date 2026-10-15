@@ -71,7 +71,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 # 기본값(httpx)은 5초 동안 안 쓴 연결을 닫아서, 검색 간격이 5초를 넘으면 매번 새로 연결하느라 DB 조회가 느려졌다.
 # 쉬는 연결을 SUPABASE_KEEPALIVE_EXPIRY초(기본 300초) 동안 유지해 다음 검색에서 그대로 재사용한다.
 SUPABASE_KEEPALIVE_EXPIRY = max(5.0, float(os.environ.get("SUPABASE_KEEPALIVE_EXPIRY", "300")))
-# 검색이 없어도 SUPABASE_KEEPALIVE_INTERVAL초(기본 45초)마다 가벼운 DB 조회를 보내 연결과 DB 데이터를 준비된 상태로 둔다. 0이면 끈다.
+# 검색이 없어도 SUPABASE_KEEPALIVE_INTERVAL초(기본 45초)마다 상품 1건만 읽는 아주 가벼운 조회를 보내 연결이 끊기지 않게 한다. 0이면 끈다.
 SUPABASE_KEEPALIVE_INTERVAL = max(0, int(os.environ.get("SUPABASE_KEEPALIVE_INTERVAL", "45")))
 
 supabase_http_client = httpx.Client(
@@ -4366,19 +4366,14 @@ def log_search_debug(
 WARMUP_ENABLED = os.environ.get("TEXTYLE_WARMUP", "1").lower() not in {"0", "false", "no"}
 
 
-def ping_supabase(query_embedding) -> None:
-    # 결과가 거의 없도록 높은 기준(0.99)으로 1개만 요청하는 가벼운 조회. 연결과 DB 데이터를 준비시키는 용도다.
-    supabase.rpc("match_clothes_fashion", {
-        "query_embedding": query_embedding,
-        "match_threshold": 0.99,
-        "match_count": 1,
-        "filter_main_categories": None,
-        "filter_sub_categories": None,
-    }).execute()
+def ping_supabase() -> None:
+    # 상품 id 1건만 읽는 아주 가벼운 조회. Supabase 연결을 유지하는 용도다.
+    # (벡터 검색으로 ping하면 작은 DB 인스턴스에서 메모리·디스크 부담이 커져 Supabase가 불안정해졌다)
+    supabase.table("clothes").select("id").limit(1).execute()
 
 
 def start_supabase_keepalive() -> None:
-    """검색이 뜸할 때도 Supabase 연결이 끊기거나 DB 데이터가 식지 않도록 주기적으로 가벼운 조회를 보낸다.
+    """검색이 뜸할 때도 Supabase 연결이 끊기지 않도록 주기적으로 아주 가벼운 조회를 보낸다.
 
     검색 결과나 응답 형식에는 영향이 없다. 조회가 실패해도 로그만 남기고 계속 동작한다.
     """
@@ -4387,14 +4382,10 @@ def start_supabase_keepalive() -> None:
         return
 
     def loop():
-        query_embedding = None
         while True:
             time.sleep(SUPABASE_KEEPALIVE_INTERVAL)
             try:
-                if query_embedding is None:
-                    text_features = get_text_embedding("a photo of fashion item")
-                    query_embedding = F.normalize(text_features, p=2, dim=-1).squeeze().tolist()
-                ping_supabase(query_embedding)
+                ping_supabase()
             except Exception as exc:
                 print(f"[Keepalive] Supabase ping failed: {exc}")
 
@@ -4442,7 +4433,13 @@ def warmup_search_server():
 
     def warm_supabase():
         query_embedding = F.normalize(state["image_features"], p=2, dim=-1).squeeze().tolist()
-        ping_supabase(query_embedding)
+        supabase.rpc("match_clothes_fashion", {
+            "query_embedding": query_embedding,
+            "match_threshold": 0.99,
+            "match_count": 1,
+            "filter_main_categories": None,
+            "filter_sub_categories": None,
+        }).execute()
 
     run_step("validate", lambda: validate_fashion_image(dummy_image))
     run_step("embedding", warm_embeddings)
