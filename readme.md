@@ -3,6 +3,27 @@
 사진 한 장과 한국어 검색어로 비슷한 옷을 찾는 패션 검색 서비스 **TEXTYLE**의 AI 검색 서버 저장소입니다.
 FastAPI 서버(`Textyle-vectorserver`)가 Gemini로 검색어를 분석하고, FashionCLIP 이미지·텍스트 벡터를 의도에 맞는 비중으로 합쳐 Supabase에서 상품을 찾은 뒤 조건에 맞게 다시 정렬합니다.
 
+## 특징
+
+- **이미지 기반 유사도 검색**: 업로드한 옷 사진을 FashionCLIP 이미지 벡터로 바꿔 시각적으로 비슷한 상품을 찾습니다. 검색어 없이 사진만으로도 검색할 수 있습니다.
+- **자연어 조건 검색**: "검정색으로", "같은 색인데 슬림한 핏"처럼 한국어로 입력한 조건을 Gemini가 색, 옷 종류, 디자인, 색 조건(같은 색 / 다른 색 / 지정 색)으로 나눕니다. 질의 의도에 따라 이미지·텍스트 벡터의 비중을 조절해 검색에 반영합니다.
+- **옷 영역 분리 (정밀 분석)**: 요청하면 GroundingDINO와 SAM으로 사진에서 옷만 분리해 배경의 영향을 줄입니다.
+- **조건 기반 재정렬**: 카테고리, 세부 카테고리(반소매·긴소매 등), 색, 데님 톤 점수로 후보를 다시 정렬합니다. 조건과 맞지 않는 후보는 제외하지 않고 순위를 뒤로 보냅니다.
+- **Supabase 벡터 검색**: 상품 정보, 이미지 URL, 카테고리, 색, FashionCLIP 벡터를 `clothes` 테이블에 저장하고 pgvector 기반 RPC(`match_clothes_fashion`)로 조회합니다.
+- **데이터 갱신 스크립트**: `DB_data`의 스크립트로 상품 등록, FashionCLIP 벡터 갱신, 사진 기반 색 갱신을 할 수 있습니다.
+- **속도와 안정성**: 서버 시작 때 모델과 DB 연결을 미리 준비하고, 동시 검색 수를 제한합니다. Gemini 응답이 늦으면 규칙 기반 분석으로 전환하고, 단계별 처리 시간을 응답과 로그에 남깁니다.
+- **웹 서비스 연동**: Spring API 서버를 거쳐 웹 서비스(tex-tyle.app)의 검색 기능으로 제공됩니다.
+
+## 기술 스택
+
+| 파트 | 기술 |
+|---|---|
+| BackEnd | Python, FastAPI, Uvicorn |
+| AI | FashionCLIP, PyTorch, Transformers, Gemini API, GroundingDINO, SAM |
+| DataBase | Supabase(PostgreSQL, pgvector) |
+| Infra | AWS EC2, GitHub Actions, AWS SSM |
+| etc. | Notion |
+
 ## 전체 구성
 
 ```
