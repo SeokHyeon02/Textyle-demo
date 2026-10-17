@@ -1,201 +1,126 @@
-﻿# 👕 Textyle
+﻿# TEXTYLE AI 검색 서버
 
-## 🔎 이미지와 자연어를 함께 이해하는 패션 검색 서비스
+사진 한 장과 한국어 검색어로 비슷한 옷을 찾는 패션 검색 서비스 **TEXTYLE**의 AI 검색 서버 저장소입니다.
+FastAPI 서버(`Textyle-vectorserver`)가 Gemini로 검색어를 분석하고, FashionCLIP 이미지·텍스트 벡터를 의도에 맞는 비중으로 합쳐 Supabase에서 상품을 찾은 뒤 조건에 맞게 다시 정렬합니다.
 
-Textyle은 사용자가 업로드한 의류 이미지와 한국어 검색 문장을 함께 분석해, Supabase에 저장된 의류 데이터 중 조건에 맞는 상품을 찾아주는 모바일 기반 패션 검색 프로젝트입니다. Expo 앱에서 이미지를 선택하고 검색어를 입력하면, FastAPI 벡터 서버가 FashionCLIP 임베딩과 쿼리 해석 결과를 이용해 유사 상품을 반환합니다.
+## 전체 구성
 
-## ✨ 특징
-
-- 🖼️ 이미지 기반 유사도 검색: 업로드한 의류 이미지를 FashionCLIP 이미지 임베딩으로 변환해 시각적으로 비슷한 상품을 검색합니다.
-- 💬 자연어 조건 검색: "검은색 바지", "비슷한 디자인의 반팔"처럼 한국어로 입력된 조건을 색상, 카테고리, 디자인 의도로 분리해 검색에 반영합니다.
-- 🎯 색상/카테고리 기반 후처리: 명시된 색상이나 반팔/긴팔 같은 세부 조건과 맞지 않는 후보를 최종 결과에서 제외해 검색 정확도를 높입니다.
-- 🗄️ Supabase 연동: 의류 상품 데이터, 이미지 URL, 카테고리, 색상, 소재, 벡터 임베딩을 Supabase 테이블에 저장하고 RPC 검색 함수로 조회합니다.
-- 🔄 데이터 갱신 스크립트: `DB_data`의 스크립트를 통해 FashionCLIP 임베딩과 제품명 기반 색상/소재 정보를 DB에 갱신할 수 있습니다.
-- 📱 모바일 중심 UX: Expo Router 기반 React Native 앱에서 이미지 선택, 검색어 입력, 결과 확인, 상품 링크 이동 흐름을 제공합니다.
-
-## 🧩 시스템 아키텍처
-
-```text
-                               👤 User
-                                  |
-                                  v
-+------------------------------------------------------------------+
-| 📱 Textyle-app                                                    |
-| Expo / React Native / Expo Router                                |
-| 이미지 선택 · 한국어 검색어 입력 · 결과 리스트 표시                 |
-+------------------------------------------------------------------+
-                                  |
-                                  | multipart/form-data
-                                  v
-+------------------------------------------------------------------+
-| 🧠 Textyle-vectorserver                                           |
-| FastAPI / FashionCLIP Search API                                  |
-| /search 요청 처리 · 이미지/텍스트 임베딩 생성 · 후보 재정렬          |
-+------------------------------------------------------------------+
-          |                         |                         |
-          v                         v                         v
-+-------------------+    +-------------------+    +-------------------+
-| 💬 Query Analyzer |    | 🖼️ FashionCLIP    |    | 🎯 Reranker       |
-| Gemini / fallback |    | image/text embed  |    | color/category    |
-| intent 추출        |    | similarity vector |    | strict filtering  |
-+-------------------+    +-------------------+    +-------------------+
-          |                         |                         |
-          +-------------------------+-------------------------+
-                                    |
-                                    v
-+------------------------------------------------------------------+
-| 🗄️ Supabase                                                       |
-| clothes 테이블 / fashion_embedding / match_clothes_fashion RPC     |
-| 상품 데이터 · 이미지 URL · 색상 · 소재 · 카테고리 · 벡터 검색         |
-+------------------------------------------------------------------+
-                                    ^
-                                    |
-+------------------------------------------------------------------+
-| 🔄 DB_data Scripts                                                |
-| update/insert_data.py / update/update_fashion_colors.py / update/update_fashion_embeddings_only.py |
-| 상품 등록 · 색상 후보 갱신 · FashionCLIP 임베딩 갱신                 |
-+------------------------------------------------------------------+
+```
+웹 (Textyle-web, Vercel)                       tex-tyle.app
+  └─ Spring Boot API 서버 (Textile-Service)    api.tex-tyle.app
+       └─ AI 검색 서버 (이 저장소, FastAPI :8001)  외부 비공개, Spring 서버만 접근
+            └─ Supabase                         clothes 테이블 · fashion_embedding · match_clothes_fashion RPC
 ```
 
-1. 👤 사용자가 모바일 앱에서 이미지를 업로드하고 검색 문장을 입력합니다.
-2. 📡 앱은 `multipart/form-data` 요청으로 FastAPI 서버의 `/search` 엔드포인트를 호출합니다.
-3. 🧠 서버는 Gemini 또는 rule-based fallback으로 검색 의도를 분석하고, FashionCLIP으로 이미지/텍스트 임베딩을 생성합니다.
-4. 🎯 서버는 Supabase RPC 함수로 벡터 유사 후보를 가져온 뒤 색상, 카테고리, 세부 카테고리 조건을 기준으로 재정렬합니다.
-5. 📱 앱은 반환된 상품 이미지, 이름, 가격, 링크를 결과 화면에 표시합니다.
-6. 🔄 `DB_data` 스크립트는 별도 실행으로 상품 임베딩과 제품명 기반 속성 정보를 Supabase에 갱신합니다.
+- 브라우저는 AI 서버를 직접 부르지 않습니다. Spring 서버가 검색 요청을 받아 이 서버의 `/search`로 중계합니다.
+- 응답 형식은 Spring 서버의 `SearchResultDto`와 맞춰져 있습니다. 응답 필드를 바꿀 때는 Spring 쪽도 함께 확인해야 합니다.
 
-## 🛠️ 기술 스택
+## 저장소 구조
 
-| 구분 | 기술 스택 | 역할 |
-| --- | --- | --- |
-| 📱 모바일 앱 | Expo, React Native, Expo Router, TypeScript | 이미지 업로드, 검색어 입력, 검색 결과 UI |
-| 🔐 인증/데이터 | Supabase Auth, Supabase Database, Supabase RPC | 사용자 인증, 상품 데이터 저장, 벡터 검색 함수 실행 |
-| 🚀 벡터 검색 서버 | Python, FastAPI, Uvicorn | `/search` API 제공, 검색 요청 처리 |
-| 🧠 AI/임베딩 | FashionCLIP, OpenAI CLIP, PyTorch, Transformers | 이미지/텍스트 임베딩 생성 및 유사도 검색 |
-| 💬 쿼리 분석 | Gemini API, rule-based fallback | 한국어 검색어 의도, 색상, 카테고리 조건 추출 |
-| 🖼️ 이미지 처리 | Pillow | 업로드 이미지 로딩, 전처리, 중심 영역 crop |
-| 🔄 데이터 갱신 | Python scripts, Supabase Python Client | 상품 등록, 속성 갱신, FashionCLIP 임베딩 갱신 |
-| ✅ 테스트 | Python `unittest` | 쿼리 분석, 필터링, rerank 순수 로직 검증 |
+| 경로 | 내용 |
+|---|---|
+| `Textyle-vectorserver/fashion_main.py` | AI 검색 서버 본체 (API, 질의 분석, 임베딩, 재정렬) |
+| `Textyle-vectorserver/fashion_color_extraction.py` | 사진 색 추출 |
+| `Textyle-vectorserver/requirements.txt` | 서버 패키지 목록 |
+| `DB_data/` | 상품 등록, 임베딩·색 갱신, 검증 스크립트 (사용법: `DB_data/scripts_guide.md`) |
+| `.github/workflows/deploy-ai.yml` | AI 서버 자동 배포 |
+| `COLOR_EXTRACTION_EXPERIMENT_NOTES.md` | 색 추출 실험 기록 |
+| `FASHIONCLIP_DENIM_SEARCH_EXPERIMENTS.md` | 데님 검색 실험 기록 |
+| `Textyle-app/` | 초기 Expo 앱 (현재 웹 프론트는 Textyle-web 저장소에서 관리) |
 
-## 🎨 의류 색상 추출 실험
+## 검색 흐름 (`POST /search`)
 
-이미지 기반 의류 색상 추출은 `GroundingDINO + SAM` 방식으로 검증 중입니다. 기존 `rembg/u2net_cloth_seg` 방식은 실패로 폐기했고, 현재는 별도 검증 스크립트에서 의류 mask와 색상 후보를 생성한 뒤 CSV 결과를 확인하는 흐름을 사용합니다.
+1. **입력 검증**: 검색어 최대 100자, 프롬프트 조작·SQL·스크립트 패턴 차단, 사진 최대 20MB
+2. **사진 준비**: 휴대폰 사진의 회전 정보(EXIF)를 반영하고 긴 변 1280px로 축소
+3. **질의 분석**: Gemini가 검색어에서 색, 옷 종류, 디자인, 색 조건(`color_mode`)을 추출합니다. 응답이 늦거나 실패하면 규칙 기반 분석으로 바로 전환합니다. 옷 종류가 비어 있으면 FashionCLIP으로 사진의 상위 카테고리를 채웁니다.
+4. **옷 영역 분리 (선택)**: `use_grounding_dino=true`(웹의 "정밀 분석")이면 GroundingDINO로 옷을 찾고 SAM으로 배경을 지운 사진을 씁니다. 모델을 쓸 수 없으면 원본 사진으로 진행합니다.
+5. **색 추출**: 같은 색 / 다른 색 조건이나 디자인 유사 검색일 때 사진에서 옷 색을 추출합니다.
+6. **벡터 결합**: FashionCLIP 이미지 벡터와 텍스트 벡터를 아래 비중으로 합칩니다.
+   `검색 벡터 = normalize(이미지 비중 × 이미지 벡터 + 텍스트 비중 × 텍스트 벡터)`
+7. **벡터 검색**: Supabase RPC `match_clothes_fashion`으로 후보를 가져옵니다 (카테고리 필터, 후보 100~220개). 같은 색 검색에서 후보가 20개 미만이면 기준을 낮춰 한 번 더 찾습니다.
+8. **재정렬**: 카테고리·색·디자인·데님 톤 점수를 더해 상위 10개를 반환합니다. 조건과 맞지 않는 후보는 제외하지 않고 순위를 뒤로 보냅니다.
 
-폐기한 방식은 다음과 같습니다.
 
-- 중앙 crop 기반 색상 추출
-- 가장자리 픽셀 기반 배경색 제거
-- `rembg` + `u2net_cloth_seg` 의류 mask
-- mask 내부 k-means 대표색 추출
-- 중앙/하단/목/소매 평균 기반 대표색 보정
+## 로컬 실행
 
-실패 원인과 개선 과정은 `COLOR_EXTRACTION_EXPERIMENT_NOTES.md`에 정리되어 있습니다. 핵심은 `rembg/u2net_cloth_seg`가 의류 전체가 아니라 상단, 하단, 허벅지 띠 같은 일부 영역만 segment하는 경우가 많았다는 점입니다.
 
-현재 검증 방향은 다음과 같습니다.
-
-- GroundingDINO로 의류 객체 bbox를 찾습니다.
-- SAM에 bbox prompt를 전달해 여러 mask 후보를 생성합니다.
-- SAM 후보 mask를 mask 크기, 배경 가능성, 색상 후보 신뢰도 기준으로 ranking합니다.
-- mask 내부 픽셀에서 k-means 색상 후보를 만들고, CSS named color 기준 세부색도 함께 저장합니다.
-- 최종 검색 색상은 `white, black, red, yellow, green, blue, purple, gray, orange, brown, pink` 11개로 정리합니다.
-- 자동 RGB 추출은 조명, 워싱, 원단 반사에 민감하므로 수동 검수 컬럼을 별도로 관리합니다.
-- `manual_final_color`는 사람이 확정한 11색 최종 색상이고, 데님 검색에서는 `dominant_color`보다 우선합니다.
-- `manual_detail_color`는 사람이 확인한 세부 색상 라벨입니다. 현재는 기록/후보 세부색으로 사용하며, 한글 라벨을 영어 named color로 자동 변환하지는 않습니다.
-- `denim_tone`은 데님팬츠 전용 톤 컬럼이며 `light, medium, dark, black, gray, raw` 또는 비데님/애매한 데님용 빈 값을 허용합니다.
-- 체크, 스트라이프, 카모 등 패턴은 색상 추출과 분리하고 ViT 패턴 분류 대상으로 표시합니다.
-
-검증 스크립트는 다음 위치에 있습니다.
-
-```text
-DB_data/test/verify_groundingdino_sam_color_extraction.py
-```
-
-실행 전 `SAM_CHECKPOINT`에 로컬 SAM checkpoint 경로를 지정해야 합니다.
-
-```powershell
-cd DB_data/test
-$env:SAM_CHECKPOINT="E:\models\sam_vit_b_01ec64.pth"
-python verify_groundingdino_sam_color_extraction.py --limit 20
-```
-
-검증 결과는 `groundingdino_sam_color_report.csv`와 `groundingdino_sam_debug_sheet.jpg`로 생성됩니다.
-
-Supabase 상품을 현재 방식으로 새로 분석해 색상 컬럼에 반영하는 스크립트도 추가되어 있습니다. 기본 실행은 dry-run입니다.
-
-```powershell
-cd DB_data
-python .\update\update_groundingdino_sam_colors.py --ids 6260 7195 7058 4397
-```
-
-이 스크립트는 Supabase에서 제품명을 읽고 `DB_data/image_jpg_700/<id>.jpg` 이미지를 GroundingDINO + SAM 방식으로 분석합니다. 실제 DB 업데이트는 명시적으로 `--apply`를 붙여 실행합니다.
-
-```powershell
-python .\update\update_groundingdino_sam_colors.py --ids 6260 7195 7058 4397 --apply
-```
-
-## 👖 FashionCLIP 데님 검색 실험
-
-데님팬츠 검색은 FashionCLIP 이미지 임베딩만으로는 연청, 중청, 진청, 흑청처럼 색상 톤이 가까운 후보를 안정적으로 구분하기 어려워 별도 실험 흐름으로 관리합니다. 현재 서버는 데님 문맥에서 이미지 색상 후보, named color, 수동 색상 컬럼, `denim_tone`, Supabase 후보 재정렬 점수를 함께 사용합니다.
-
-현재 검색 정책은 다음과 같습니다.
-
-- DB의 `fashion_embedding`은 상품 이미지 임베딩입니다.
-- 검색 시 업로드 이미지 임베딩과 텍스트 query 임베딩을 조합해 Supabase RPC `match_clothes_fashion`으로 1차 후보를 가져옵니다.
-- 1차 후보는 서버에서 다시 재정렬합니다. 재정렬에는 카테고리, 색상 후보, `denim_tone`, 수동 색상 컬럼, named color 거리, FashionCLIP similarity가 사용됩니다.
-- 데님팬츠 문맥에서 RPC 결과에 `manual_final_color`가 있으면 후보의 대표 색상으로 우선 사용합니다. 없으면 `dominant_color`, `color_candidates` 순서로 fallback합니다.
-- 데님팬츠 문맥에서 RPC 결과에 `manual_detail_color`가 있으면 수동 후보의 `named_color`로 사용합니다. 단, 한글 세부색 라벨은 현재 영어 CSS named color로 자동 변환하지 않습니다.
-- `denim_tone`은 데님 색상 검색에서 `manual_final_color`와 별도로 쓰는 톤 축입니다. 최종 11색이 같아도 `light, medium, dark, black, gray, raw`에 따라 랭킹이 달라질 수 있습니다.
-- 후보 제품명에 `wide`, `straight` 같은 핏 단어가 있다고 해서 디자인 보너스를 주지 않습니다. 별도 `fit_type`, `fit`, `silhouette`, `pants_fit`, `length_type`, `design_details` 같은 후보 메타데이터가 있을 때만 디자인 보너스를 적용합니다.
-- `중청` 같은 데님 톤 쿼리는 FashionCLIP 텍스트 프롬프트에서 `medium blue denim jeans`처럼 자연스러운 영어 표현으로 정규화합니다.
-
-RPC가 데님 수동 색상을 검색에 반영하려면 결과 row에 최소한 다음 컬럼을 포함해야 합니다.
-
-```text
-manual_final_color
-manual_detail_color
-denim_tone
-dominant_color
-color_candidates
-```
-
-상세 실험 내용과 폐기한 보조 스크립트는 `FASHIONCLIP_DENIM_SEARCH_EXPERIMENTS.md`에 정리되어 있습니다. 현재 기준으로 `DB_data/test/check_product_name_color_hint.py`와 `DB_data/update/export_denim_pants_rows.py`는 임시 검증용 스크립트였으므로 저장소에서 제거했습니다.
-
-## 🚀 Textyle 프로젝트 실행 방법
-
-### 1. ⚙️ 사전 준비
-
-- 🔑 `Textyle-vectorserver` 폴더 안에 `.env` 파일을 생성하고 Supabase, Gemini 등 서버에서 사용하는 API 키를 입력합니다.
-- 📱 `Textyle-app` 폴더 안에 환경 변수 파일이 필요한 경우 생성하고 앱에서 사용하는 API 키를 입력합니다.
-- 🌐 `Textyle-app` 실행 환경에 `EXPO_PUBLIC_FASHION_API_URL`을 설정합니다. 예: `http://192.168.0.6:8001`
-- 🔌 API URL은 FashionCLIP 서버 포트 `8001`을 바라보도록 맞춥니다.
-
-### 2. 📱 모바일 앱 실행
-
-프로젝트 루트 폴더에서 새 터미널을 열고 아래 명령어를 실행합니다.
-
-```powershell
-cd Textyle-app
-npx expo start
-```
-
-### 3. 👕 FashionCLIP 벡터 서버 실행
-
-FashionCLIP 기반 검색 서버를 사용할 경우 프로젝트 루트 폴더에서 새 터미널을 열고 아래 명령어를 실행합니다.
-
-```powershell
+```bash
 cd Textyle-vectorserver
-$env:PYTHONIOENCODING="utf-8"
-uvicorn fashion_main:app --host 0.0.0.0 --port 8001 --reload
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-앱의 요청 주소도 `8001` 포트를 바라보도록 맞춥니다.
+- torch는 `requirements.txt`의 안내대로 설치합니다. CPU 전용 주소(`--index-url .../whl/cpu`)로 설치하지 마세요.
 
-```powershell
-$env:EXPO_PUBLIC_FASHION_API_URL="http://192.168.0.6:8001"
-npx expo start
+`Textyle-vectorserver/.env`를 만듭니다. 실제 값은 팀 DM으로 공유됩니다.
+
+```
+SUPABASE_URL=
+SUPABASE_KEY=
+GEMINI_API_KEY=
+GEMINI_MODEL_NAME=
+SAM_CHECKPOINT=      # SAM 체크포인트 파일 경로 (정밀 분석용, 예: sam_vit_b_01ec64.pth)
 ```
 
-### 4. ⚠️ 주의 사항
+서버 실행
 
-- 🗄️ `fashion_main.py`는 Supabase RPC 함수 `match_clothes_fashion`과 `fashion_embedding` 컬럼을 사용합니다.
-- 🧾 앱 화면이 계속 로딩 중이면 서버 터미널에서 `/search` 요청 로그가 어디까지 출력되는지 확인합니다.
+```bash
+uvicorn fashion_main:app --host 0.0.0.0 --port 8001
+```
+
+- Windows PowerShell에서 한글 로그가 깨지면 먼저 `$env:PYTHONIOENCODING="utf-8"`를 설정합니다.
+- 처음 실행할 때 FashionCLIP과 GroundingDINO 모델을 내려받느라 시간이 걸립니다.
+- `curl http://localhost:8001/health`로 확인합니다.
+- Spring 서버를 로컬에서 함께 띄우면 기본 설정(`ai.server.url=http://localhost:8001`)으로 바로 연결됩니다.
+
+### 선택 환경변수
+
+| 이름 | 기본값 | 설명 |
+|---|---|---|
+| `TEXTYLE_ENABLE_DINO_SAM` | `1` | `0`이면 GroundingDINO·SAM 모델을 올리지 않습니다 (정밀 분석 요청도 원본 사진으로 처리) |
+| `SAM_MODEL_TYPE` | `vit_b` | SAM 모델 종류 |
+| `GROUNDING_DINO_MODEL_ID` | `IDEA-Research/grounding-dino-tiny` | GroundingDINO 모델 |
+| `DINO_SAM_BOX_THRESHOLD` / `DINO_SAM_TEXT_THRESHOLD` | `0.28` / `0.25` | 옷 영역 검출 기준 |
+| `DINO_SAM_DEVICE` | 자동 | DINO·SAM 실행 장치 |
+| `FASHION_CLIP_MODEL_ID` | `patrickjohncyh/fashion-clip` | 임베딩 모델 |
+| `GEMINI_TIMEOUT_MS` | `12000` | Gemini 응답 대기 상한 (Gemini API는 10초 미만을 거절) |
+| `MAX_CONCURRENT_SEARCHES` | `2` | 동시에 실행하는 검색 수. 나머지는 순서대로 대기 |
+| `MAX_IMAGE_SIDE` | `1280` | 업로드 사진 긴 변 최대 크기(px) |
+| `MAX_UPLOAD_MB` | `20` | 업로드 사진 최대 용량 (Spring 서버와 같은 값) |
+| `TEXTYLE_WARMUP` | `1` | 서버 시작 때 모델 로딩·프롬프트 임베딩·DB 연결을 미리 준비 |
+| `SUPABASE_KEEPALIVE_INTERVAL` | `45` | 검색이 없을 때 Supabase 연결 유지용 1건 조회 간격(초). `0`이면 끔 |
+| `SUPABASE_KEEPALIVE_EXPIRY` | `300` | 쉬고 있는 Supabase 연결을 유지하는 시간(초) |
+
+## 운영 서버와 배포
+
+- `main`에 `Textyle-vectorserver/` 변경이 푸시되면 `deploy-ai.yml`이 실행됩니다.
+  - GitHub Actions가 AWS 임시 권한(OIDC)을 받아 SSM으로 서버에 명령을 보냅니다. GitHub에 AWS 키를 저장하지 않고, SSH 접속도 쓰지 않습니다.
+  - 서버에서 `git pull` → (`requirements.txt`가 바뀌었으면) 패키지 설치 → 재시작 → `/health` 응답 확인(최대 10분)
+- 직접 배포하려면 Actions → **Deploy AI server** → **Run workflow**를 누릅니다. 서버 인스턴스가 중지되어 있으면 실패하므로, 켠 뒤 다시 실행합니다.
+
+서버에서 자주 쓰는 명령
+
+```bash
+curl -s http://127.0.0.1:8001/health      # 상태 확인
+sudo journalctl -u textyle-ai -f          # 실시간 로그 ([Timing] 줄에 단계별 처리 시간)
+sudo systemctl restart textyle-ai         # 재시작
+```
+
+## 상품 데이터 (Supabase)
+
+- `clothes` 테이블에 상품 정보, 이미지 URL, 카테고리, 색, `fashion_embedding`(상품 사진의 FashionCLIP 벡터)을 저장합니다.
+- 검색 색은 `white, black, red, yellow, green, blue, purple, gray, orange, brown, pink` 11가지로 정리합니다.
+- 데님 바지는 별도로 `denim_tone`(`light, medium, dark, black, gray, raw`)을 씁니다. `manual_final_color`, `manual_detail_color`는 사람이 검수한 색입니다.
+- 재정렬에서 색을 비교하려면 RPC 결과에 `dominant_color`, `color_candidates`, `manual_final_color`, `manual_detail_color`, `denim_tone` 컬럼이 포함되어야 합니다.
+- 상품 등록과 갱신 스크립트 사용법은 `DB_data/scripts_guide.md`를 참고하세요. 일부 스크립트(예: `update_groundingdino_sam_colors.py`)는 기본이 미리보기(dry-run)라 `--apply`를 붙여야 반영되지만, 바로 DB에 쓰는 스크립트도 있으니 실행 전에 확인하세요.
+
+## 실험 기록
+
+- **색 추출**: 중앙 영역 자르기, `rembg/u2net_cloth_seg` 방식은 옷의 일부만 잡는 문제로 폐기하고 GroundingDINO + SAM으로 바꿨습니다. → `COLOR_EXTRACTION_EXPERIMENT_NOTES.md`
+- **데님 검색**: 연청·중청·진청처럼 가까운 톤을 구분하려고 `denim_tone`과 수동 검수 색을 재정렬에 반영했습니다. → `FASHIONCLIP_DENIM_SEARCH_EXPERIMENTS.md`
+
+## 관련 저장소
+
+- 웹 프론트: `givenhhy/Textyle-web`
+- Spring Boot API 서버: `sunghoonhan-hh/Textile-Service`
